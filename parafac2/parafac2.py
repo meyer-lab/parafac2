@@ -47,9 +47,9 @@ def parafac2_nd(
     rank: int,
     n_iter_max: int = 200,
     tol: float = 1e-6,
-    verbose = None,
+    verbose=None,
     random_state=None,
-    linesearch=True,
+    linesearch: bool=True,
 ) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray], float]:
     r"""The same interface as regular PARAFAC2."""
     rng = np.random.RandomState(random_state)
@@ -72,7 +72,7 @@ def parafac2_nd(
     # Checks size of signal measured is bigger than rank
     assert np.shape(X_in[0])[1] > rank
 
-    # Initialization  
+    # Initialization
     unfolded = np.concatenate(X_in, axis=0).T
     C = randomized_svd(unfolded, rank, random_state=rng)[0]
 
@@ -80,7 +80,11 @@ def parafac2_nd(
     CP = CPTensor(
         (
             None,
-            [tl.ones((len(X_in), rank)).cuda().double(), tl.eye(rank).cuda().double(), torch.tensor(C).cuda().double()],
+            [
+                tl.ones((len(X_in), rank)).cuda().double(),
+                tl.eye(rank).cuda().double(),
+                torch.tensor(C).cuda().double(),
+            ],
         )
     )
 
@@ -97,7 +101,6 @@ def parafac2_nd(
             line_iter = True
         else:
             line_iter = False
-
 
         # Initiate line search
         if line_iter:
