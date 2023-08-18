@@ -3,10 +3,11 @@ from copy import deepcopy
 from typing import Sequence
 import numpy as np
 from tqdm import tqdm
+import tensorly as tl
 from tensorly.cp_tensor import CPTensor
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
-from tensorly.tenalg.svd import randomized_svd, truncated_svd
-from tensorly.decomposition import parafac
+from tensorly.tenalg.svd import randomized_svd
+from scipy.linalg import khatri_rao
 from scipy.optimize import linear_sum_assignment
 
 
@@ -20,8 +21,8 @@ def _cmf_reconstruction_error(matrices: Sequence, factors: list, norm_X_sq: floa
     projected_X = []
 
     for i, mat in enumerate(matrices):
-        U, _, Vh = truncated_svd(mat @ (A[i] * C) @ B.T, A.shape[1])
-        proj = U @ Vh
+        U, _, V = np.linalg.svd(mat @ (A[i] * C) @ B.T, full_matrices=False)
+        proj = U @ V
 
         B_i = (proj @ B) * A[i]
         # trace of the multiplication products
@@ -31,6 +32,34 @@ def _cmf_reconstruction_error(matrices: Sequence, factors: list, norm_X_sq: floa
         projected_X.append(proj.T @ mat)
 
     return norm_X_sq - 2 * inner_product + norm_cmf_sq, projections, projected_X
+
+
+def parafac(tensor, rank, init, n_iter_max=20):
+    """A simple implementation of ALS."""
+    _, factors = init
+
+    unfolded = [tl.unfold(tensor, i) for i in range(np.ndim(tensor))]
+
+    for _ in range(n_iter_max):
+        for mode in range(np.ndim(tensor)):
+            pinv = np.ones((rank, rank))
+            for i, factor in enumerate(factors):
+                if i != mode:
+                    pinv *= factor.T @ factor
+
+            if mode == 0:
+                kr = khatri_rao(factors[1], factors[2])
+            elif mode == 1:
+                kr = khatri_rao(factors[0], factors[2])
+            elif mode == 2:
+                kr = khatri_rao(factors[0], factors[1])
+            else:
+                raise RuntimeError("Should not end up here.")
+
+            mttkrp = unfolded[mode] @ kr
+            factors[mode] = np.linalg.solve(pinv.T, mttkrp.T).T
+
+    return CPTensor((None, factors))
 
 
 def parafac2_nd(
@@ -78,7 +107,7 @@ def parafac2_nd(
 
     errs = []
 
-    tq = tqdm(range(n_iter_max), disable=(not verbose), mininterval=2)
+    tq = tqdm(range(n_iter_max), disable=(not verbose))
     projections = None
     for iter in tq:
         err, projections, projected_X = _cmf_reconstruction_error(
@@ -136,10 +165,7 @@ def parafac2_nd(
         CP = parafac(
             projected_X,
             rank,
-            n_iter_max=10,
             init=CP,
-            tol=False,
-            normalize_factors=False,
         )
 
         if iter > 1:
