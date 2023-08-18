@@ -1,10 +1,8 @@
 import os
 from copy import deepcopy
 from typing import Sequence
-import torch
 import numpy as np
 from tqdm import tqdm
-import tensorly as tl
 from tensorly.cp_tensor import CPTensor
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 from tensorly.tenalg.svd import randomized_svd, truncated_svd
@@ -35,18 +33,15 @@ def _cmf_reconstruction_error(matrices: Sequence, factors: list, norm_X_sq: floa
     return norm_X_sq - 2 * inner_product + norm_cmf_sq, projections, projected_X
 
 
-@torch.inference_mode()
 def parafac2_nd(
     X_in: Sequence,
     rank: int,
     n_iter_max: int = 200,
     tol: float = 1e-6,
     verbose=None,
-    random_state=None,
     linesearch: bool = True,
 ) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray], float]:
     r"""The same interface as regular PARAFAC2."""
-    rng = np.random.RandomState(random_state)
 
     # Check if verbose was not set
     if verbose is None:
@@ -57,7 +52,7 @@ def parafac2_nd(
     acc_fail: int = 0  # How many times acceleration have failed
     max_fail: int = 4  # Increase acc_pow with one after max_fail failure
 
-    norm_tensor = np.sum([np.linalg.norm(xx) ** 2 for xx in X_in])
+    norm_tensor = float(np.sum([np.linalg.norm(xx) ** 2 for xx in X_in]))
 
     # Checks size of each experiment is bigger than rank
     for i in range(len(X_in)):
@@ -68,7 +63,7 @@ def parafac2_nd(
 
     # Initialization
     unfolded = np.concatenate(X_in, axis=0).T
-    C = randomized_svd(unfolded, rank, random_state=rng)[0]
+    C = randomized_svd(unfolded, rank, random_state=1)[0]
 
     CP = CPTensor(
         (
@@ -84,6 +79,7 @@ def parafac2_nd(
     errs = []
 
     tq = tqdm(range(n_iter_max), disable=(not verbose), mininterval=2)
+    projections = None
     for iter in tq:
         err, projections, projected_X = _cmf_reconstruction_error(
             X_in, CP.factors, norm_tensor
@@ -117,42 +113,34 @@ def parafac2_nd(
                 projected_X = projected_X_ls
                 CP = CP_ls
 
-                if verbose:
-                    print(f"Accepted line search jump of {jump}.")
             else:
                 acc_fail += 1
 
                 if verbose:
-                    print(f"Line search failed for jump of {jump}.")
+                    print(f"iter {iter}: Line search failed for jump of {jump}.")
 
                 if acc_fail == max_fail:
                     acc_pow += 1.0
                     acc_fail = 0
 
                     if verbose:
-                        print("Reducing acceleration.")
+                        print(f"iter {iter}: Reducing acceleration.")
 
         errs.append(err / norm_tensor)
 
         # Project tensor slices
         projected_X = np.stack(projected_X)
-        projected_X = torch.tensor(projected_X).cuda().double()
 
         CP_old: CPTensor = deepcopy(CP)
 
-        tl.set_backend("pytorch")
-        CP = CPTensor((None, [torch.tensor(aa).cuda().double() for aa in CP.factors]))
         CP = parafac(
             projected_X,
             rank,
-            n_iter_max=20,
+            n_iter_max=10,
             init=CP,
             tol=False,
             normalize_factors=False,
         )
-        tl.set_backend("numpy")
-        CP.factors = [f.numpy(force=True) for f in CP.factors]
-        CP.weights = CP.weights.numpy(force=True)
 
         if iter > 1:
             delta = errs[-2] - errs[-1]
