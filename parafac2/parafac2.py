@@ -14,8 +14,7 @@ from scipy.optimize import linear_sum_assignment
 def _cmf_reconstruction_error(matrices: Sequence, factors: list, norm_X_sq: float):
     A, B, C = factors
 
-    norm_cmf_sq = 0
-    inner_product = 0
+    norm_sq_err = norm_X_sq
     CtC = C.T @ C
     projections = []
     projected_X = []
@@ -26,12 +25,12 @@ def _cmf_reconstruction_error(matrices: Sequence, factors: list, norm_X_sq: floa
 
         B_i = (proj @ B) * A[i]
         # trace of the multiplication products
-        inner_product += np.trace(B_i.T @ mat @ C)
-        norm_cmf_sq += ((B_i.T @ B_i) * CtC).sum()
+        norm_sq_err -= 2.0 * np.trace(B_i.T @ mat @ C)
+        norm_sq_err += ((B_i.T @ B_i) * CtC).sum()
         projections.append(proj)
         projected_X.append(proj.T @ mat)
 
-    return norm_X_sq - 2 * inner_product + norm_cmf_sq, projections, projected_X
+    return norm_sq_err, projections, projected_X
 
 
 def parafac(tensor, rank, init, n_iter_max=20):
