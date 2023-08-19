@@ -22,13 +22,14 @@ def _cmf_reconstruction_error(matrices: Sequence, factors: list, norm_X_sq: floa
     for i, mat in enumerate(matrices):
         U, _, V = np.linalg.svd(mat @ (A[i] * C) @ B.T, full_matrices=False)
         proj = U @ V
-
-        B_i = (proj @ B) * A[i]
-        # trace of the multiplication products
-        norm_sq_err -= 2.0 * np.trace(B_i.T @ mat @ C)
-        norm_sq_err += ((B_i.T @ B_i) * CtC).sum()
         projections.append(proj)
         projected_X.append(proj.T @ mat)
+
+        B_i = (proj @ B) * A[i]
+
+        # trace of the multiplication products
+        norm_sq_err -= 2.0 * np.trace(A[i][:, np.newaxis] * B.T @ projected_X[-1] @ C)
+        norm_sq_err += ((B_i.T @ B_i) * CtC).sum()
 
     return norm_sq_err, projections, projected_X
 
