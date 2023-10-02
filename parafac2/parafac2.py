@@ -72,9 +72,13 @@ def parafac2_nd(
     # Checks size of signal measured is bigger than rank
     assert np.shape(X_in[0])[1] > rank
 
-    # Initialization
-    unfolded = np.concatenate(X_in, axis=0).T
-    C = randomized_svd(unfolded, rank, random_state=rng)[0]
+    # Assemble covariance matrix rather than concatenation
+    # This saves memory and should be faster
+    covM = np.zeros((X_in[0].shape[1], X_in[0].shape[1]))
+    for i in range(len(X_in)):
+        covM += X_in[i].T @ X_in[i]
+
+    C = randomized_svd(covM, rank, random_state=rng)[0]
 
     tl.set_backend("pytorch")
     CP = CPTensor(
