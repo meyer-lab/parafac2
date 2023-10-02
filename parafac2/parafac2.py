@@ -12,33 +12,34 @@ from tensorly.decomposition import parafac
 from scipy.optimize import linear_sum_assignment
 
 
-def _cmf_reconstruction_error(matrices: Sequence, factors: list, norm_X_sq, rng=None):
+def _cmf_reconstruction_error(matrices: Sequence, factors: list, norm_X_sq):
     A, B, C = factors
 
-    norm_cmf_sq = 0
-    inner_product = 0
+    norm_sq_err = norm_X_sq
     CtC = C.T @ C
     projections = []
     projected_X = []
 
     for i, mat in enumerate(matrices):
         if isinstance(B, torch.Tensor):
-            mat_gpu = torch.tensor(mat).cuda().double()
+            mat_gpu = torch.tensor(mat).cuda()
         else:
             mat_gpu = mat
 
         lhs = B @ (A[i] * C).T
-        U, _, Vh = randomized_svd(mat_gpu @ lhs.T, A.shape[1], random_state=rng)
+        U, _, Vh = randomized_svd(mat_gpu @ lhs.T, A.shape[1], rng=1)
         proj = U @ Vh
 
-        B_i = (proj @ B) * A[i]
-        # trace of the multiplication products
-        inner_product += tl.trace(B_i.T @ mat_gpu @ C)
-        norm_cmf_sq += ((B_i.T @ B_i) * CtC).sum()
         projections.append(proj)
         projected_X.append(proj.T @ mat_gpu)
 
-    return norm_X_sq - 2 * inner_product + norm_cmf_sq, projections, projected_X
+        B_i = (proj @ B) * A[i]
+
+        # trace of the multiplication products
+        norm_sq_err -= 2.0 * tl.trace(A[i][:, np.newaxis] * B.T @ projected_X[-1] @ C)
+        norm_sq_err += ((B_i.T @ B_i) * CtC).sum()
+
+    return norm_sq_err, projections, projected_X
 
 
 @torch.inference_mode()
@@ -47,21 +48,16 @@ def parafac2_nd(
     rank: int,
     n_iter_max: int = 200,
     tol: float = 1e-6,
-    verbose=None,
     random_state=None,
-    linesearch: bool=True,
 ) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray], float]:
     r"""The same interface as regular PARAFAC2."""
     rng = np.random.RandomState(random_state)
 
-    # Check if verbose was not set
-    if verbose is None:
-        # Check if this is an automated build
-        verbose = "CI" not in os.environ
+    # Verbose if this is not an automated build
+    verbose = "CI" not in os.environ
 
     acc_pow: float = 2.0  # Extrapolate to the iteration^(1/acc_pow) ahead
     acc_fail: int = 0  # How many times acceleration have failed
-    max_fail: int = 4  # Increase acc_pow with one after max_fail failure
 
     norm_tensor = np.sum([np.linalg.norm(xx) ** 2 for xx in X_in])
 
@@ -90,20 +86,14 @@ def parafac2_nd(
 
     errs = []
 
-    tq = tqdm(range(n_iter_max), disable=(not verbose), mininterval=2)
+    tq = tqdm(range(n_iter_max), disable=(not verbose))
     for iter in tq:
         err, projections, projected_X = _cmf_reconstruction_error(
-            X_in, CP.factors, norm_tensor, rng=rng
+            X_in, CP.factors, norm_tensor
         )
 
-        # Will we be performing a line search iteration
-        if linesearch and iter % 2 == 0 and iter > 5:
-            line_iter = True
-        else:
-            line_iter = False
-
         # Initiate line search
-        if line_iter:
+        if iter % 2 == 0 and iter > 5:
             jump = iter ** (1.0 / acc_pow)
 
             # Estimate error with line search
@@ -113,7 +103,7 @@ def parafac2_nd(
                 for ii in range(3)
             ]
             err_ls, projections_ls, projected_X_ls = _cmf_reconstruction_error(
-                X_in, CP_ls.factors, norm_tensor, rng=rng
+                X_in, CP_ls.factors, norm_tensor
             )
 
             if err_ls < err:
@@ -122,16 +112,10 @@ def parafac2_nd(
                 projections = projections_ls
                 projected_X = projected_X_ls
                 CP = CP_ls
-
-                if verbose:
-                    print(f"Accepted line search jump of {jump}.")
             else:
                 acc_fail += 1
 
-                if verbose:
-                    print(f"Line search failed for jump of {jump}.")
-
-                if acc_fail == max_fail:
+                if acc_fail >= 4:
                     acc_pow += 1.0
                     acc_fail = 0
 
@@ -147,7 +131,7 @@ def parafac2_nd(
         CP = parafac(
             projected_X,
             rank,
-            n_iter_max=2,
+            n_iter_max=10,
             init=CP,
             tol=False,
             normalize_factors=False,
