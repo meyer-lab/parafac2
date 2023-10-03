@@ -7,7 +7,7 @@ from tqdm import tqdm
 import tensorly as tl
 from tensorly.cp_tensor import CPTensor
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
-from tensorly.tenalg.svd import randomized_svd
+from tensorly.tenalg.svd import truncated_svd, randomized_svd
 from tensorly.decomposition import parafac
 from scipy.optimize import linear_sum_assignment
 
@@ -27,7 +27,7 @@ def _cmf_reconstruction_error(matrices: Sequence, factors: list, norm_X_sq):
             mat_gpu = mat
 
         lhs = B @ (A[i] * C).T
-        U, _, Vh = randomized_svd(mat_gpu @ lhs.T, A.shape[1], rng=1)
+        U, _, Vh = truncated_svd(mat_gpu @ lhs.T, A.shape[1])
         proj = U @ Vh
 
         projections.append(proj)
@@ -70,11 +70,11 @@ def parafac2_nd(
 
     # Assemble covariance matrix rather than concatenation
     # This saves memory and should be faster
-    covM = np.zeros((X_in[0].shape[1], X_in[0].shape[1]))
-    for i in range(len(X_in)):
+    covM = X_in[0].T @ X_in[0]
+    for i in range(1, len(X_in)):
         covM += X_in[i].T @ X_in[i]
 
-    C = randomized_svd(covM, rank, random_state=rng)[0]
+    C = randomized_svd(covM, rank, random_state=rng, n_iter=4)[0]
 
     tl.set_backend("pytorch")
     CP = CPTensor(
