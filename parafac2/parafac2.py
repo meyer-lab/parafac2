@@ -22,7 +22,7 @@ def _cmf_reconstruction_error(matrices: Sequence, factors: list, norm_X_sq):
 
     for i, mat in enumerate(matrices):
         if isinstance(B, torch.Tensor):
-            mat_gpu = torch.tensor(mat).cuda()
+            mat_gpu = torch.tensor(mat).cuda().double()
         else:
             mat_gpu = mat
 
