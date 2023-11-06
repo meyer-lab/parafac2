@@ -7,12 +7,14 @@ from copy import deepcopy
 
 def pf2_pls(Xs, Y, rank=2, max_iter=100):
     # Sanity check
+    oXs = deepcopy(Xs)
     assert len(Xs) > 1
     K = len(Xs)
     assert Y.shape[0] == K
     J = Xs[0].shape[0]
+    for k in range(K):
+        assert Xs[k].shape[0] == J
     Ns = [X.shape[1] for X in Xs]
-    oXs = deepcopy(Xs)
 
     # Initialization
     T = np.ones((K, rank))
@@ -30,5 +32,5 @@ def pf2_pls(Xs, Y, rank=2, max_iter=100):
             for k in range(K):
                 T[k, n_comp] = A[:, n_comp].T @ Xs[k] @ Fk[k][:, n_comp].T
         for k in range(K):
-            Xs[k] = oXs[k] - T[k, n_comp] * A[:, :n_comp] @ Fk[k][:, :n_comp].T
+            Xs[k] = oXs[k] - T[k, n_comp] * A[:, :(n_comp+1)] @ Fk[k][:, :(n_comp+1)].T
     return T, A, Fk
