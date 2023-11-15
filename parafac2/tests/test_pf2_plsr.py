@@ -12,8 +12,8 @@ DEFAULT_IJK = (10, 10, 10)
 def test_factor_normality(rank):
     (X, y), _, _ = gen_synthetic_dataset(rank, *DEFAULT_IJK)
     pls = PF2_PLSR(rank).fit(X, y)
-    assert all_close(np.linalg.norm(pls.Omega_J, axis=2), 1)
-    assert all_close(np.linalg.norm(pls.Omega_K, axis=1), 1)
+    np.testing.assert_allclose(np.linalg.norm(pls.Omega_J, axis=2), 1)
+    np.testing.assert_allclose(np.linalg.norm(pls.Omega_K, axis=1), 1)
 
 
 @pytest.mark.parametrize("rank", [1, 2, 3])
@@ -51,7 +51,7 @@ def test_reconstruction_X(rank):
     pls.fit(X, y, max_iter=15000, tol=1e-15, center=False)
     X_reconstructed = pls.reconstruct_X()
     X = X_slices_to_tensor(X)
-    assert all_close(X_reconstructed, X, rtol=1e-2)
+    np.testing.assert_allclose(X_reconstructed, X, rtol=1e-2)
 
 
 def test_reconstruction_X_padded():
@@ -72,7 +72,7 @@ def test_reconstruction_X_padded():
     pls = PF2_PLSR(5)
     pls.fit(X, y)
 
-    assert all_close(X_slices_to_tensor(X), pls.reconstruct_X(), rtol=1e-1)
+    np.testing.assert_allclose(X_slices_to_tensor(X), pls.reconstruct_X(), rtol=1e-1)
 
 
 def test_rand_covariance():
@@ -99,9 +99,9 @@ def test_maximum_covariance(rank):
     pls.fit(X, y)
 
     assert np.isclose(
-        np.cov(T_init.T @ b_init, y, bias=True)[0, 1],
-        np.cov(pls.T.T @ pls.b, y, bias=True)[0, 1],
-        rtol=1e-1,
+        np.corrcoef(pls.T.T @ pls.b, y)[0, 1],
+        1,
+        atol=5e-2,
     )
 
 
@@ -111,7 +111,7 @@ def test_prediction(rank):
     (X, y), _, _ = gen_synthetic_dataset(rank, *DEFAULT_IJK, y_mixed_comps=False)
     pls = PF2_PLSR(rank)
     pls.fit(X, y, center=False)
-    assert all_close(pls.y_fit, y, rtol=1e-1)
+    np.testing.assert_allclose(pls.y_fit, y, rtol=1e-1)
 
 
 @pytest.mark.parametrize("rank", [1, 2, 3, 4])
@@ -151,12 +151,12 @@ def gen_synthetic_dataset(rank, I, J, K, y_mixed_comps=False):
     assert Omega_J.shape == (rank, I, J)
     if rank > 1:
         assert are_orthogonal(Omega_J[0, 0], Omega_J[1, 0])
-    assert all_close(np.linalg.norm(Omega_J, axis=2), 1)
+    np.testing.assert_allclose(np.linalg.norm(Omega_J, axis=2), 1)
 
     Omega_K = np.linalg.qr(np.random.uniform(-1, 1, (K, rank)))[0].T
     if rank > 1:
         assert are_orthogonal(Omega_K[0], Omega_K[1])
-    assert all_close(np.linalg.norm(Omega_K, axis=1), 1)
+    np.testing.assert_allclose(np.linalg.norm(Omega_K, axis=1), 1)
 
     T = np.linalg.qr(np.random.uniform(-1, 1, (I, rank)))[0].T
 
@@ -173,7 +173,3 @@ def gen_synthetic_dataset(rank, I, J, K, y_mixed_comps=False):
 
 def are_orthogonal(v1, v2):
     return np.isclose(np.dot(v1, v2), 0, rtol=1e-15)
-
-
-def all_close(v1, v2, **kwargs):
-    return np.all(np.isclose(v1, v2, **kwargs))
