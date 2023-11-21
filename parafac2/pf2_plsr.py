@@ -109,6 +109,14 @@ class PF2_PLSR:
 
         return self
 
+    def predict(self, X: List[np.ndarray]) -> np.ndarray:
+        assert all(
+            [slice.shape[1] == self.K for slice in X]
+        ), f"Each condition slice in X should have shape equal to (?, {self.K})"
+        # TODO, implement
+        y = np.zeros(len(X))
+        return y
+
     def initialize_fit(self, X: List[np.ndarray], y: np.ndarray, center=True):
         """Initialize factor arrays and preprocess X and y."""
         X, y = deepcopy(X), deepcopy(y)
@@ -185,7 +193,12 @@ class PF2_PLSR:
 
         Returns: linear regression coefficients of shape (variables,)
         """
-        return np.linalg.lstsq(predictors, y, rcond=-1)[0]
+        try:
+            return np.linalg.lstsq(predictors, y, rcond=-1)[0]
+        except np.linalg.LinAlgError as exc:
+            raise ValueError(
+                "Computation of regression coefficients failed. y is likely fully explained by fewer components in X than specified by self.rank. Retry with smaller rank."
+            ) from exc
 
 
 def initialize_w(X: np.ndarray, init: Literal):

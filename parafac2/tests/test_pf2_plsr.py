@@ -1,8 +1,9 @@
 import numpy as np
 import pytest
 from tensorly.metrics.factors import congruence_coefficient
-
 from parafac2.pf2_plsr import *
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.model_selection import KFold
 
 
 DEFAULT_IJK = (10, 10, 10)
@@ -106,7 +107,7 @@ def test_maximum_covariance(rank):
 
 
 @pytest.mark.parametrize("rank", [1, 2])
-def test_prediction(rank):
+def test_y_t_agree(rank):
     """Tests that the y generated from fitting is close to the original y."""
     (X, y), _, _ = gen_synthetic_dataset(rank, *DEFAULT_IJK, y_mixed_comps=False)
     pls = PF2_PLSR(rank)
@@ -115,13 +116,44 @@ def test_prediction(rank):
 
 
 @pytest.mark.parametrize("rank", [1, 2, 3, 4])
-def test_prediction_mixed_comps(rank):
+def test_y_t_agree_mixed_comps(rank):
     """Same as test_prediction except y is composed as the combination of
     multiple components in X."""
     (X, y), _, _ = gen_synthetic_dataset(rank, *DEFAULT_IJK, y_mixed_comps=True)
     pls = PF2_PLSR(rank)
     pls.fit(X, y, center=False)
     assert congruence_coefficient(pls.y_fit[None, :], y[None, :])[0] > 0.95
+
+
+@pytest.mark.parametrize("rank", [1, 2, 3])
+def test_predict(rank):
+    # generate synthetic dataset of `rank` from randomized factors
+    (X, y), _, _ = gen_synthetic_dataset(rank, 50, 10, 10, y_mixed_comps=True)
+
+    kf = KFold(n_splits=10)
+
+    mse_scores = []
+    r2_scores = []
+
+    # Perform 10-fold cross-validation
+    for train_index, test_index in kf.split(X):
+        X_train, X_test = [X[i] for i in train_index], [X[j] for j in test_index]
+        y_train, y_test = y[train_index], y[test_index]
+
+        pls = PF2_PLSR(rank)
+        pls.fit(X_train, y_train, center=False)
+        y_test_predict = pls.predict(X_test)
+
+        mse = mean_squared_error(y_test, y_test_predict)
+        r2 = r2_score(y_test, y_test_predict)
+
+        mse_scores.append(mse)
+        r2_scores.append(r2)
+
+    average_mse = np.mean(mse_scores)
+    average_r2 = np.mean(r2_scores)
+    print(f"Average MSE for rank {rank}: {average_mse}")
+    print(f"Average R^2 for rank {rank}: {average_r2}")
 
 
 def gen_synthetic_dataset(rank, I, J, K, y_mixed_comps=False):
