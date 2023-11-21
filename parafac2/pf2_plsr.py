@@ -110,12 +110,20 @@ class PF2_PLSR:
         return self
 
     def predict(self, X: List[np.ndarray]) -> np.ndarray:
-        assert all(
-            [slice.shape[1] == self.K for slice in X]
-        ), f"Each condition slice in X should have shape equal to (?, {self.K})"
+        for slice in X:
+            assert (
+                slice.shape[1] == self.K
+            ), f"Each condition slice in X should {self.K} columns."
+
+        cell_T = np.zeros((len(X), self.rank))
+
+        for i, xx in enumerate(X):
+            cell_v = xx @ self.Omega_K.T
+
+            cell_T[i, :] = np.linalg.norm(cell_v, axis=0)
+
         # TODO, implement
-        y = np.zeros(len(X))
-        return y
+        return cell_T @ self.b
 
     def initialize_fit(self, X: List[np.ndarray], y: np.ndarray, center=True):
         """Initialize factor arrays and preprocess X and y."""
