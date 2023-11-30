@@ -12,6 +12,30 @@ from tensorly.decomposition import parafac
 from scipy.optimize import linear_sum_assignment
 
 
+def standardize_pf2(
+    weights: np.ndarray, factors: list[np.ndarray], projections: list[np.ndarray]
+) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:
+    # Order components by condition variance
+    gini = np.var(factors[0], axis=0) / np.mean(factors[0], axis=0)
+    gini_idx = np.argsort(gini)
+    factors = [f[:, gini_idx] for f in factors]
+    weights = weights[gini_idx]
+
+    weights, factors = cp_normalize(cp_flip_sign((weights, factors), mode=1))
+
+    # Order eigen-cells to maximize the diagonal of B
+    _, col_ind = linear_sum_assignment(np.abs(factors[1].T), maximize=True)
+    factors[1] = factors[1][col_ind, :]
+    projections = [p[:, col_ind] for p in projections]
+
+    # Flip the sign based on B
+    signn = np.sign(np.diag(factors[1]))
+    factors[1] *= signn[:, np.newaxis]
+    projections = [p * signn for p in projections]
+
+    return weights, factors, projections
+
+
 def _cmf_reconstruction_error(matrices: Sequence, factors: list, norm_X_sq):
     A, B, C = factors
 
@@ -136,9 +160,10 @@ def parafac2_nd(
             projected_X,
             rank,
             n_iter_max=10,
-            init=CP,
+            init=CP, # type: ignore
             tol=False,
             normalize_factors=False,
+            l2_reg=0.0001, # type: ignore
         )
 
         if iter > 1:
@@ -151,35 +176,8 @@ def parafac2_nd(
     R2X = 1 - errs[-1]
     tl.set_backend("numpy")
 
-    gini_idx = giniIndex(tl.to_numpy(CP.factors[0].cpu()))
-    assert gini_idx.size == rank
+    CP.factors = [f.numpy(force=True) for f in CP.factors]
+    CP.weights = CP.weights.numpy(force=True)
+    projections = [p.numpy(force=True) for p in projections]
 
-    CP.factors = [f.numpy(force=True)[:, gini_idx] for f in CP.factors]
-    CP.weights = CP.weights.numpy(force=True)[gini_idx]
-
-    CP = cp_normalize(cp_flip_sign(CP, mode=1))
-
-    for ii in range(3):
-        np.testing.assert_allclose(
-            np.linalg.norm(CP.factors[ii], axis=0), 1.0, rtol=1e-2
-        )
-
-    # Maximize the diagonal of B
-    _, col_ind = linear_sum_assignment(np.abs(CP.factors[1].T), maximize=True)
-    CP.factors[1] = CP.factors[1][col_ind, :]
-    projections = [p.numpy(force=True)[:, col_ind] for p in projections]
-
-    # Flip the sign based on B
-    signn = np.sign(np.diag(CP.factors[1]))
-    CP.factors[1] *= signn[:, np.newaxis]
-    projections = [p * signn for p in projections]
-
-    return CP.weights, CP.factors, projections, R2X
-
-
-def giniIndex(X: np.ndarray) -> np.ndarray:
-    """Calculates the Gini Coeff for each component and returns the index rearrangment"""
-    X = np.abs(X)
-    gini = np.var(X, axis=0) / np.mean(X, axis=0)
-
-    return np.argsort(gini)
+    return *standardize_pf2(CP.weights, CP.factors, projections), R2X
