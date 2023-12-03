@@ -12,6 +12,7 @@ scipy = "^1.11"
 tensorly = "0.8.1"
 tqdm = "^4.65.0"
 cupy-cuda12x = "^12.2.0"
+anndata = "^0.10.3"
 
 
 [tool.poetry.group.dev.dependencies]

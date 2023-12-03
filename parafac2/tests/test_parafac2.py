@@ -4,7 +4,8 @@ Test the data import.
 import numpy as np
 from tensorly.decomposition import parafac2
 from tensorly.random import random_parafac2
-from ..parafac2 import parafac2_nd, _cmf_reconstruction_error
+from ..parafac2 import parafac2_nd
+from ..utils import reconstruction_error, project_slices
 from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
 
 
@@ -55,7 +56,9 @@ def test_pf2_r2x():
     """Compare R2X values to tensorly implementation"""
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
 
-    errCMF, p, _ = _cmf_reconstruction_error(X, f, norm_tensor)
+    p, projected_X = project_slices(X, f)
+    errCMF = reconstruction_error(f, p, projected_X, norm_tensor)
+
     err = _parafac2_reconstruction_error(X, (w, f, p)) ** 2
 
     np.testing.assert_allclose(err, errCMF, rtol=1e-12)
