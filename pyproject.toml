@@ -10,7 +10,7 @@ python = ">=3.10,<3.13"
 numpy = "^1.26"
 scipy = "^1.11"
 tensorly = "0.8.1"
-tqdm = "^4.65.0"
+tqdm = "^4.66.1"
 cupy-cuda12x = "^12.2.0"
 anndata = "^0.10.3"
 

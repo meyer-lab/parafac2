@@ -1,10 +1,32 @@
 import numpy as np
 import cupy as cp
+import anndata
 import scipy.sparse as sps
 from cupyx.scipy import sparse as cupy_sparse
 from typing import Sequence
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 from scipy.optimize import linear_sum_assignment
+
+
+def calc_total_norm(X: anndata.AnnData) -> float:
+    """Calculate the total norm of the dataset, with centering"""
+    Xarr = sps.csr_array(X.X)
+    means = X.var["means"].to_numpy()
+
+    # Deal with non-zero values first, by centering
+    centered_nonzero = Xarr.data - means[Xarr.indices]
+    centered_nonzero_norm = float(np.linalg.norm(centered_nonzero) ** 2.0)
+
+    # Obtain non-zero counts for each column
+    # Note that these are sorted, and no column should be empty
+    unique, counts = np.unique(Xarr.indices, return_counts=True)
+    assert np.all(np.diff(unique) == 1)
+
+    num_zero = Xarr.shape[0] - counts
+    assert num_zero.shape == means.shape
+    zero_norm = np.sum(np.square(means) * num_zero)
+
+    return zero_norm + centered_nonzero_norm
 
 
 def project_slices(matrices: Sequence, factors: list):
