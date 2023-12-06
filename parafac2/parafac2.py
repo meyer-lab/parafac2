@@ -130,7 +130,7 @@ def parafac2_nd(
         _, factors = parafac(
             projected_X,
             rank,
-            n_iter_max=3,
+            n_iter_max=5,
             init=(None, factors),  # type: ignore
             tol=False,
             normalize_factors=False,
