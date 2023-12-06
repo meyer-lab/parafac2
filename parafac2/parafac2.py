@@ -150,4 +150,4 @@ def parafac2_nd(
     factors = [cp.asnumpy(f) for f in factors]
     projections = [cp.asnumpy(p) for p in projections]
 
-    return *standardize_pf2(factors, projections), R2X
+    return standardize_pf2(factors, projections), R2X
