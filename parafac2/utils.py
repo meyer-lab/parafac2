@@ -1,5 +1,7 @@
 import numpy as np
 import cupy as cp
+import scipy.sparse as sps
+from cupyx.scipy import sparse as cupy_sparse
 from typing import Sequence
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 from scipy.optimize import linear_sum_assignment
@@ -21,6 +23,31 @@ def project_slices(matrices: Sequence, factors: list):
 
         projections.append(proj)
         projected_X[i] = proj.T @ mat_gpu
+
+    return projections, projected_X
+
+
+def project_data(
+    Xarr: sps.csr_array, sgIndex: np.ndarray, means, factors: list
+) -> tuple[cp.ndarray, cp.ndarray]:
+    A, B, C = factors
+
+    projections = []
+    projected_X = cp.empty((A.shape[0], B.shape[0], C.shape[0]))
+
+    for i in range(np.amax(sgIndex) + 1):
+        # Prepare CuPy matrix
+        mat = cupy_sparse.csr_matrix(Xarr[sgIndex == i], dtype=cp.float32)
+
+        lhs = cp.array(B @ (A[i] * C).T, dtype=cp.float32)
+        U, _, Vh = cp.linalg.svd(mat @ lhs.T - means @ lhs.T, full_matrices=False)
+        proj = U @ Vh
+
+        projections.append(proj)
+
+        # Account for centering
+        centering = cp.outer(cp.sum(proj, axis=0), means)
+        projected_X[i, :, :] = proj.T @ mat - centering
 
     return projections, projected_X
 

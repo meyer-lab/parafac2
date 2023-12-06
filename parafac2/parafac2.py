@@ -54,8 +54,10 @@ def parafac2_nd(
 
     tq = tqdm(range(n_iter_max), disable=(not verbose))
     for iter in tq:
+        lineIter = iter % 2 == 0 and iter > 5
+
         # Initiate line search
-        if iter % 2 == 0 and iter > 5:
+        if lineIter:
             jump = iter ** (1.0 / acc_pow)
 
             # Estimate error with line search
@@ -76,6 +78,7 @@ def parafac2_nd(
                 projected_X = projected_X_ls
                 factors = factors_ls
             else:
+                lineIter = False
                 acc_fail += 1
 
                 if acc_fail >= 4:
@@ -84,7 +87,8 @@ def parafac2_nd(
 
                     if verbose:
                         print("Reducing acceleration.")
-        else:
+
+        if lineIter is False:
             projections, projected_X = project_slices(X_in, factors)
             err = reconstruction_error(factors, projections, projected_X, norm_tensor)
 
