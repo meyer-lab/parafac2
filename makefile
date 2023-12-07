@@ -8,3 +8,6 @@ testprofile:
 
 clean:
 	rm profile.svg profile
+
+mypy:
+	poetry run mypy --install-types --non-interactive --ignore-missing-imports parafac2

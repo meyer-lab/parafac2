@@ -30,7 +30,7 @@ def calc_total_norm(X: anndata.AnnData) -> float:
 
 
 def project_slices(
-    matrices: Sequence, factors: list
+    matrices: Sequence, factors: list[np.ndarray | cp.ndarray]
 ) -> tuple[list[np.ndarray], np.ndarray | cp.ndarray]:
     A, B, C = factors
     xp = cp.get_array_module(B)
@@ -82,18 +82,18 @@ def reconstruction_error(
     """Calculate the reconstruction error from the factors and projected data."""
     A, B, C = factors
     xp = cp.get_array_module(B)
-    CtC = C.T @ C
+    CtC = cp.asnumpy(C.T @ C)
 
-    norm_sq_err = xp.array(norm_X_sq)
+    norm_sq_err = norm_X_sq
 
     for i, proj in enumerate(projections):
-        B_i = (xp.array(proj) @ B) * A[i]
+        B_i = (proj @ cp.asnumpy(B)) * cp.asnumpy(A[i])
 
         # trace of the multiplication products
-        norm_sq_err -= 2.0 * xp.trace(A[i][:, xp.newaxis] * B.T @ projected_X[i] @ C)
+        norm_sq_err -= cp.asnumpy(2.0 * xp.trace(A[i][:, xp.newaxis] * B.T @ projected_X[i] @ C))
         norm_sq_err += ((B_i.T @ B_i) * CtC).sum()
 
-    return float(cp.asnumpy(norm_sq_err))
+    return norm_sq_err
 
 
 def standardize_pf2(
