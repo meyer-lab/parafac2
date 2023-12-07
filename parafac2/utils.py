@@ -29,32 +29,34 @@ def calc_total_norm(X: anndata.AnnData) -> float:
     return zero_norm + centered_nonzero_norm
 
 
-def project_slices(matrices: Sequence, factors: list):
+def project_slices(
+    matrices: Sequence, factors: list
+) -> tuple[list[np.ndarray], np.ndarray | cp.ndarray]:
     A, B, C = factors
     xp = cp.get_array_module(B)
 
     projections = []
-    projected_X = xp.empty((A.shape[0], B.shape[0], C.shape[0]))
+    projected_X = xp.empty((A.shape[0], B.shape[0], C.shape[0]), xp.float32)
 
     for i, mat in enumerate(matrices):
-        mat_gpu = xp.array(mat)
+        mat_gpu = xp.array(mat, xp.float32)
 
-        lhs = B @ (A[i] * C).T
-        U, _, Vh = xp.linalg.svd(mat_gpu @ lhs.T, full_matrices=False)
+        lhs = (A[i] * C) @ B.T
+        U, _, Vh = xp.linalg.svd(mat_gpu @ lhs.astype(xp.float32), full_matrices=False)
         proj = U @ Vh
 
-        projections.append(proj)
         projected_X[i] = proj.T @ mat_gpu
+        projections.append(cp.asnumpy(proj))
 
     return projections, projected_X
 
 
 def project_data(
     Xarr: sps.csr_array, sgIndex: np.ndarray, means, factors: list
-) -> tuple[cp.ndarray, cp.ndarray]:
+) -> tuple[list[np.ndarray], cp.ndarray]:
     A, B, C = factors
 
-    projections = []
+    projections: list[np.ndarray] = []
     projected_X = cp.empty((A.shape[0], B.shape[0], C.shape[0]))
 
     for i in range(np.amax(sgIndex) + 1):
@@ -65,7 +67,7 @@ def project_data(
         U, _, Vh = cp.linalg.svd(mat @ lhs.T - means @ lhs.T, full_matrices=False)
         proj = U @ Vh
 
-        projections.append(proj)
+        projections.append(cp.asnumpy(proj))
 
         # Account for centering
         centering = cp.outer(cp.sum(proj, axis=0), means)
@@ -85,7 +87,7 @@ def reconstruction_error(
     norm_sq_err = xp.array(norm_X_sq)
 
     for i, proj in enumerate(projections):
-        B_i = (proj @ B) * A[i]
+        B_i = (xp.array(proj) @ B) * A[i]
 
         # trace of the multiplication products
         norm_sq_err -= 2.0 * xp.trace(A[i][:, xp.newaxis] * B.T @ projected_X[i] @ C)

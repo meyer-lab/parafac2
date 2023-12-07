@@ -13,7 +13,13 @@ from tqdm import tqdm
 import tensorly as tl
 from tensorly.tenalg.svd import randomized_svd
 from tensorly.decomposition import parafac
-from .utils import reconstruction_error, standardize_pf2, project_slices, calc_total_norm, project_data
+from .utils import (
+    reconstruction_error,
+    standardize_pf2,
+    project_slices,
+    calc_total_norm,
+    project_data,
+)
 
 
 def parafac2_init(
@@ -41,7 +47,7 @@ def parafac2_nd(
     n_iter_max: int = 200,
     tol: float = 1e-6,
     random_state=None,
-) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray], float]:
+):
     r"""The same interface as regular PARAFAC2."""
     cp.random.set_random_state(cp.random.RandomState(random_state))
 
@@ -93,7 +99,9 @@ def parafac2_nd(
             ]
 
             if isinstance(X_in, anndata.AnnData):
-                projections_ls, projected_X_ls = project_data(Xarr, sgIndex, means, factors)
+                projections_ls, projected_X_ls = project_data(
+                    Xarr, sgIndex, means, factors
+                )
             else:
                 projections_ls, projected_X_ls = project_slices(X_in, factors_ls)
             err_ls = reconstruction_error(
@@ -148,6 +156,5 @@ def parafac2_nd(
     tl.set_backend("numpy")
 
     factors = [cp.asnumpy(f) for f in factors]
-    projections = [cp.asnumpy(p) for p in projections]
 
-    return standardize_pf2(factors, projections), R2X
+    return standardize_pf2(factors, projections), R2X  # type: ignore

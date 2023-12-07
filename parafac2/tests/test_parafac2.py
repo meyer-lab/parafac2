@@ -61,13 +61,13 @@ def test_pf2_r2x():
 
     err = _parafac2_reconstruction_error(X, (w, f, p)) ** 2
 
-    np.testing.assert_allclose(err, errCMF, rtol=1e-12)
+    np.testing.assert_allclose(err, errCMF, rtol=1e-8)
 
 
 def test_performance():
     """Test for equivalence to TensorLy's PARAFAC2."""
     # 5000 by 2000 by 300 is roughly the lupus data
-    pf2shape = [(500, 100)] * 3
+    pf2shape = [(5000, 2000)] * 100
     X = random_parafac2(pf2shape, rank=12, full=True, random_state=2)
 
     (w1, f1, p1), e1 = parafac2_nd(X, rank=9)
