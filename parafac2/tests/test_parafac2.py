@@ -3,13 +3,14 @@ Test the data import.
 """
 import pytest
 import anndata
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, random
 import numpy as np
 import cupy as cp
 from tensorly.decomposition import parafac2
 from tensorly.random import random_parafac2
 from ..parafac2 import parafac2_nd
-from ..utils import reconstruction_error, project_data
+from ..utils import reconstruction_error, project_data, calc_total_norm
+from tensorly.parafac2_tensor import parafac2_to_slices
 from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
 
 
@@ -91,9 +92,61 @@ def test_pf2_r2x(sparse: bool):
 def test_performance(sparse: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
     # 5000 by 2000 by 300 is roughly the lupus data
-    pf2shape = [(5000, 2000)] * 10
+    pf2shape = [(5000, 2000)] * 30
     X = random_parafac2(pf2shape, rank=12, full=True, random_state=2)
 
     X = pf2_to_anndata(X, sparse=sparse)
 
     (w1, f1, p1), e1 = parafac2_nd(X, rank=9)
+
+
+def test_total_norm():
+    """This tests that mean centering does not affect the projections and error calculation."""
+    X = anndata.AnnData(X=random(200, 200, density=0.1, format="csr"))  # type: ignore
+    X.var["means"] = np.zeros(X.shape[1])
+
+    normBefore = calc_total_norm(X)
+
+    # De-mean since we aim to subtract off the means
+    means = np.mean(X.X.toarray(), axis=0)  # type: ignore
+    X.X += means
+    X.X = csr_matrix(X.X)
+    X.var["means"] = means
+
+    normAfter = calc_total_norm(X)
+    np.testing.assert_allclose(normBefore, normAfter)
+
+
+def test_pf2_proj_centering():
+    """Test that centering the matrix does not affect the results."""
+    _, factors, projections = random_parafac2(
+        shapes=[(25, 300) for _ in range(15)],
+        rank=3,
+        normalise_factors=False,
+        dtype=np.float64,
+    )
+
+    X_pf = parafac2_to_slices((None, factors, projections))
+    X_ann = pf2_to_anndata(X_pf, sparse=False)
+
+    norm_X_sq = float(np.linalg.norm(X_ann.X) ** 2.0)  # type: ignore
+
+    projections, projected_X = project_data(X_ann, factors)
+    factors_gpu = [cp.array(f) for f in factors]
+    norm_sq_err = reconstruction_error(factors_gpu, projections, projected_X, norm_X_sq)
+
+    np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
+
+    # De-mean since we aim to subtract off the means
+    X_ann.var["means"] = np.random.randn(X_ann.shape[1])  # type: ignore
+    X_ann.X += X_ann.var["means"].to_numpy()  # type: ignore
+
+    projections, projected_X_mean = project_data(X_ann, factors)
+    norm_sq_err_centered = reconstruction_error(
+        factors_gpu, projections, projected_X, norm_X_sq
+    )
+
+    cp.testing.assert_allclose(projected_X, projected_X_mean)
+    np.testing.assert_allclose(
+        norm_sq_err / norm_X_sq, norm_sq_err_centered / norm_X_sq, atol=1e-6
+    )
