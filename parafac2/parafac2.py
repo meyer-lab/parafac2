@@ -1,88 +1,57 @@
 import os
 from copy import deepcopy
-from typing import Sequence
 import anndata
+from sklearn.utils.extmath import randomized_svd
 import numpy as np
 import cupy as cp
-import scipy.sparse as sps
-import cupy as cp
-from cupyx.scipy import sparse as cupy_sparse
-import scipy.sparse as sps
-from cupyx.scipy.sparse.linalg import svds
 from tqdm import tqdm
 import tensorly as tl
-from tensorly.tenalg.svd import randomized_svd
 from tensorly.decomposition import parafac
 from .utils import (
     reconstruction_error,
     standardize_pf2,
-    project_slices,
     calc_total_norm,
     project_data,
 )
 
 
 def parafac2_init(
-    X_in: Sequence,
+    X_in: anndata.AnnData,
     rank: int,
     random_state=None,
-):
-    rng = np.random.RandomState(random_state)
+) -> list[cp.ndarray]:
+    # Index dataset to a list of conditions
+    sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
+    n_cond = np.amax(sgIndex) + 1
 
-    # Assemble covariance matrix rather than concatenation
-    # This saves memory and should be faster
-    covM = X_in[0].T @ X_in[0]
-    for i in range(1, len(X_in)):
-        covM += X_in[i].T @ X_in[i]
+    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state)  # type: ignore
 
-    C = randomized_svd(cp.array(covM), rank, random_state=rng, n_iter=4)[0]
-
-    factors = [cp.ones((len(X_in), rank)), cp.eye(rank), C]
+    factors = [cp.ones((n_cond, rank)), cp.eye(rank), cp.array(C.T)]
     return factors
 
 
 def parafac2_nd(
-    X_in,
+    X_in: anndata.AnnData,
     rank: int,
     n_iter_max: int = 200,
     tol: float = 1e-6,
     random_state=None,
 ):
     r"""The same interface as regular PARAFAC2."""
-    cp.random.set_random_state(cp.random.RandomState(random_state))
-
     # Verbose if this is not an automated build
     verbose = "CI" not in os.environ
 
     acc_pow: float = 2.0  # Extrapolate to the iteration^(1/acc_pow) ahead
     acc_fail: int = 0  # How many times acceleration have failed
 
-    tl.set_backend("cupy")
-    if isinstance(X_in, anndata.AnnData):
-        # Index dataset to a list of conditions
-        sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
-        n_cond = np.amax(sgIndex) + 1
-
-        Xarr = sps.csr_array(X_in.X)
-        means = cp.array(X_in.var["means"].to_numpy())
-
-        norm_tensor = calc_total_norm(X_in)
-
-        xInit = cupy_sparse.csr_matrix(Xarr[::3])
-
-        _, _, C = svds(xInit, k=rank, return_singular_vectors=True)
-
-        factors = [
-            cp.ones((n_cond, rank)),
-            cp.eye(rank),
-            C.T,
-        ]
-    else:
-        norm_tensor = float(np.sum([np.linalg.norm(xx) ** 2 for xx in X_in]))
-        factors = parafac2_init(X_in, rank, random_state)
+    norm_tensor = calc_total_norm(X_in)
+    factors = parafac2_init(X_in, rank, random_state)
 
     errs: list[float] = []
+    projections: list[np.ndarray] = []
     err = float("NaN")
+
+    tl.set_backend("cupy")
 
     tq = tqdm(range(n_iter_max), disable=(not verbose))
     for iter in tq:
@@ -98,12 +67,7 @@ def parafac2_nd(
                 for ii in range(3)
             ]
 
-            if isinstance(X_in, anndata.AnnData):
-                projections_ls, projected_X_ls = project_data(
-                    Xarr, sgIndex, means, factors
-                )
-            else:
-                projections_ls, projected_X_ls = project_slices(X_in, factors_ls)
+            projections_ls, projected_X_ls = project_data(X_in, factors)
             err_ls = reconstruction_error(
                 factors_ls, projections_ls, projected_X_ls, norm_tensor
             )
@@ -126,10 +90,7 @@ def parafac2_nd(
                         print("Reducing acceleration.")
 
         if lineIter is False:
-            if isinstance(X_in, anndata.AnnData):
-                projections, projected_X = project_data(Xarr, sgIndex, means, factors)
-            else:
-                projections, projected_X = project_slices(X_in, factors)
+            projections, projected_X = project_data(X_in, factors)
             err = reconstruction_error(factors, projections, projected_X, norm_tensor)
 
         errs.append(err / norm_tensor)
@@ -156,5 +117,4 @@ def parafac2_nd(
     tl.set_backend("numpy")
 
     factors = [cp.asnumpy(f) for f in factors]
-
-    return standardize_pf2(factors, projections), R2X  # type: ignore
+    return standardize_pf2(factors, projections), R2X
