@@ -3,13 +3,15 @@ import cupy as cp
 import anndata
 import scipy.sparse as sps
 from cupyx.scipy import sparse as cupy_sparse
-from typing import Sequence
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 from scipy.optimize import linear_sum_assignment
 
 
 def calc_total_norm(X: anndata.AnnData) -> float:
     """Calculate the total norm of the dataset, with centering"""
+    if isinstance(X.X, np.ndarray):
+        return float(np.linalg.norm(X.X) ** 2.0)
+
     Xarr = sps.csr_array(X.X)
     means = X.var["means"].to_numpy()
 
@@ -29,42 +31,33 @@ def calc_total_norm(X: anndata.AnnData) -> float:
     return zero_norm + centered_nonzero_norm
 
 
-def project_slices(
-    matrices: Sequence, factors: list[np.ndarray | cp.ndarray]
-) -> tuple[list[np.ndarray], np.ndarray | cp.ndarray]:
-    A, B, C = factors
-    xp = cp.get_array_module(B)
-
-    projections = []
-    projected_X = xp.empty((A.shape[0], B.shape[0], C.shape[0]), xp.float32)
-
-    for i, mat in enumerate(matrices):
-        mat_gpu = xp.array(mat, xp.float32)
-
-        lhs = (A[i] * C) @ B.T
-        U, _, Vh = xp.linalg.svd(mat_gpu @ lhs.astype(xp.float32), full_matrices=False)
-        proj = U @ Vh
-
-        projected_X[i] = proj.T @ mat_gpu
-        projections.append(cp.asnumpy(proj))
-
-    return projections, projected_X
-
-
 def project_data(
-    Xarr: sps.csr_array, sgIndex: np.ndarray, means, factors: list
+    X_in: anndata.AnnData, factors: list[np.ndarray | cp.ndarray]
 ) -> tuple[list[np.ndarray], cp.ndarray]:
     A, B, C = factors
+
+    # Index dataset to a list of conditions
+    sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
+
+    if "means" in X_in.var:
+        means = cp.array(X_in.var["means"].to_numpy())
+    else:
+        means = cp.zeros((1, C.shape[0]))
+
+    if isinstance(X_in.X, np.ndarray):
+        gpu_move = cp.array
+    else:
+        gpu_move = cupy_sparse.csr_matrix
 
     projections: list[np.ndarray] = []
     projected_X = cp.empty((A.shape[0], B.shape[0], C.shape[0]))
 
     for i in range(np.amax(sgIndex) + 1):
         # Prepare CuPy matrix
-        mat = cupy_sparse.csr_matrix(Xarr[sgIndex == i], dtype=cp.float32)
+        mat = gpu_move(X_in.X[sgIndex == i])  # type: ignore
 
-        lhs = cp.array(B @ (A[i] * C).T, dtype=cp.float32)
-        U, _, Vh = cp.linalg.svd(mat @ lhs.T - means @ lhs.T, full_matrices=False)
+        lhs = cp.array((A[i] * C) @ B.T)
+        U, _, Vh = cp.linalg.svd(mat @ lhs - means @ lhs, full_matrices=False)
         proj = U @ Vh
 
         projections.append(cp.asnumpy(proj))
@@ -77,7 +70,10 @@ def project_data(
 
 
 def reconstruction_error(
-    factors: list, projections: list, projected_X: cp.ndarray, norm_X_sq: float
+    factors: list,
+    projections: list[np.ndarray],
+    projected_X: cp.ndarray,
+    norm_X_sq: float,
 ):
     """Calculate the reconstruction error from the factors and projected data."""
     A, B, C = factors
@@ -90,7 +86,9 @@ def reconstruction_error(
         B_i = (proj @ cp.asnumpy(B)) * cp.asnumpy(A[i])
 
         # trace of the multiplication products
-        norm_sq_err -= cp.asnumpy(2.0 * xp.trace(A[i][:, xp.newaxis] * B.T @ projected_X[i] @ C))
+        norm_sq_err -= cp.asnumpy(
+            2.0 * xp.trace(A[i][:, xp.newaxis] * B.T @ projected_X[i] @ C)
+        )
         norm_sq_err += ((B_i.T @ B_i) * CtC).sum()
 
     return norm_sq_err
