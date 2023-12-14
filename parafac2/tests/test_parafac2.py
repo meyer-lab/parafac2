@@ -8,7 +8,7 @@ import numpy as np
 import cupy as cp
 from tensorly.decomposition import parafac2
 from tensorly.random import random_parafac2
-from ..parafac2 import parafac2_nd
+from ..parafac2 import parafac2_nd, parafac2_init
 from ..utils import reconstruction_error, project_data, calc_total_norm
 from tensorly.parafac2_tensor import parafac2_to_slices
 from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
@@ -31,6 +31,27 @@ def pf2_to_anndata(X_list, sparse=False):
     X_merged.var["means"] = np.zeros(X_list[0].shape[1])
 
     return X_merged
+
+
+def test_init_reprod(sparse=False):
+    """Test for equivalence to TensorLy's PARAFAC2."""
+    X_ann = pf2_to_anndata(X, sparse=sparse)
+
+    f1 = parafac2_init(X_ann, rank=3, random_state=1)
+    f2 = parafac2_init(X_ann, rank=3, random_state=1)
+
+    # Compare both seeds
+    for ii in range(3):
+        cp.testing.assert_array_equal(f1[ii], f2[ii])
+
+    proj1, proj_X1 = project_data(X_ann, f1)
+    proj2, proj_X2 = project_data(X_ann, f2)
+
+    # Compare both seeds
+    cp.testing.assert_array_equal(proj_X1, proj_X2)
+
+    for ii in range(len(proj1)):
+        np.testing.assert_array_equal(proj1[ii], proj2[ii])
 
 
 @pytest.mark.parametrize("sparse", [False, True])
