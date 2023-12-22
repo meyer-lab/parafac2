@@ -12,6 +12,7 @@ from .utils import (
     standardize_pf2,
     calc_total_norm,
     project_data,
+    anndata_to_list,
 )
 
 
@@ -47,6 +48,13 @@ def parafac2_nd(
     norm_tensor = calc_total_norm(X_in)
     factors = parafac2_init(X_in, rank, random_state)
 
+    X_list = anndata_to_list(X_in)
+
+    if "means" in X_in.var:
+        means = cp.array(X_in.var["means"].to_numpy())
+    else:
+        means = cp.zeros((1, factors[2].shape[0]))
+
     errs: list[float] = []
     projections: list[np.ndarray] = []
     err = float("NaN")
@@ -67,7 +75,7 @@ def parafac2_nd(
                 for ii in range(3)
             ]
 
-            projections_ls, projected_X_ls = project_data(X_in, factors)
+            projections_ls, projected_X_ls = project_data(X_list, means, factors)
             err_ls = reconstruction_error(
                 factors_ls, projections_ls, projected_X_ls, norm_tensor
             )
@@ -90,7 +98,7 @@ def parafac2_nd(
                         print("Reducing acceleration.")
 
         if lineIter is False:
-            projections, projected_X = project_data(X_in, factors)
+            projections, projected_X = project_data(X_list, means, factors)
             err = reconstruction_error(factors, projections, projected_X, norm_tensor)
 
         errs.append(err / norm_tensor)
@@ -99,7 +107,7 @@ def parafac2_nd(
         _, factors = parafac(
             projected_X,
             rank,
-            n_iter_max=5,
+            n_iter_max=10,
             init=(None, factors),  # type: ignore
             tol=False,
             normalize_factors=False,

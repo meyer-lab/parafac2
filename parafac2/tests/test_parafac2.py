@@ -33,9 +33,9 @@ def pf2_to_anndata(X_list, sparse=False):
     return X_merged
 
 
-def test_init_reprod(sparse=False):
-    """Test for equivalence to TensorLy's PARAFAC2."""
-    X_ann = pf2_to_anndata(X, sparse=sparse)
+def test_init_reprod():
+    """Test for reproducibility with the dense formulation."""
+    X_ann = pf2_to_anndata(X, sparse=False)
 
     f1 = parafac2_init(X_ann, rank=3, random_state=1)
     f2 = parafac2_init(X_ann, rank=3, random_state=1)
@@ -44,8 +44,8 @@ def test_init_reprod(sparse=False):
     for ii in range(3):
         cp.testing.assert_array_equal(f1[ii], f2[ii])
 
-    proj1, proj_X1 = project_data(X_ann, f1)
-    proj2, proj_X2 = project_data(X_ann, f2)
+    proj1, proj_X1 = project_data(X, cp.zeros((1, X_ann.shape[1])), f1)
+    proj2, proj_X2 = project_data(X, cp.zeros((1, X_ann.shape[1])), f2)
 
     # Compare both seeds
     cp.testing.assert_array_equal(proj_X1, proj_X2)
@@ -85,8 +85,8 @@ def test_parafac2(sparse: bool):
     np.testing.assert_allclose(w1, w2, rtol=1e-6)
     np.testing.assert_allclose(e1, e2)
     for ii in range(3):
-        np.testing.assert_allclose(f1[ii], f2[ii], atol=1e-6, rtol=1e-5)
-        np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-6, rtol=1e-5)
+        np.testing.assert_allclose(f1[ii], f2[ii], atol=1e-7, rtol=1e-6)
+        np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-7, rtol=1e-6)
 
     # Compare to TensorLy
     np.testing.assert_allclose(w1, wT, rtol=0.02)  # type: ignore
@@ -95,13 +95,11 @@ def test_parafac2(sparse: bool):
         np.testing.assert_allclose(p1[ii], pT[ii], rtol=0.01, atol=0.01)
 
 
-@pytest.mark.parametrize("sparse", [False, True])
-def test_pf2_r2x(sparse: bool):
+def test_pf2_r2x():
     """Compare R2X values to tensorly implementation"""
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
 
-    X_ann = pf2_to_anndata(X, sparse=sparse)
-    p, projected_X = project_data(X_ann, f)
+    p, projected_X = project_data(X, cp.zeros((1, X[0].shape[1])), f)
     errCMF = reconstruction_error(f, p, cp.asnumpy(projected_X), norm_tensor)
 
     err = _parafac2_reconstruction_error(X, (w, f, p)) ** 2
@@ -148,21 +146,20 @@ def test_pf2_proj_centering():
     )
 
     X_pf = parafac2_to_slices((None, factors, projections))
-    X_ann = pf2_to_anndata(X_pf, sparse=False)
 
-    norm_X_sq = float(np.linalg.norm(X_ann.X) ** 2.0)  # type: ignore
+    norm_X_sq = np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])) # type: ignore
 
-    projections, projected_X = project_data(X_ann, factors)
+    projections, projected_X = project_data(X_pf, cp.zeros((1, 300)), factors)
     factors_gpu = [cp.array(f) for f in factors]
     norm_sq_err = reconstruction_error(factors_gpu, projections, projected_X, norm_X_sq)
 
     np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
 
     # De-mean since we aim to subtract off the means
-    X_ann.var["means"] = np.random.randn(X_ann.shape[1])  # type: ignore
-    X_ann.X += X_ann.var["means"].to_numpy()  # type: ignore
+    means = np.random.randn(X_pf[0].shape[1])
+    X_pf = [xx + means for xx in X_pf]
 
-    projections, projected_X_mean = project_data(X_ann, factors)
+    projections, projected_X_mean = project_data(X_pf, cp.array(means), factors)
     norm_sq_err_centered = reconstruction_error(
         factors_gpu, projections, projected_X, norm_X_sq
     )

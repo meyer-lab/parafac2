@@ -7,6 +7,17 @@ from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 from scipy.optimize import linear_sum_assignment
 
 
+def anndata_to_list(X_in: anndata.AnnData) -> list[np.ndarray | sps.csr_array]:
+    # Index dataset to a list of conditions
+    sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
+
+    X_list = []
+    for i in range(np.amax(sgIndex) + 1):
+        X_list.append(X_in.X[sgIndex == i])  # type: ignore
+
+    return X_list
+
+
 def calc_total_norm(X: anndata.AnnData) -> float:
     """Calculate the total norm of the dataset, with centering"""
     if isinstance(X.X, np.ndarray):
@@ -32,29 +43,19 @@ def calc_total_norm(X: anndata.AnnData) -> float:
 
 
 def project_data(
-    X_in: anndata.AnnData, factors: list[np.ndarray | cp.ndarray]
+    X_list, means, factors: list[np.ndarray | cp.ndarray]
 ) -> tuple[list[np.ndarray], cp.ndarray]:
     A, B, C = factors
-
-    # Index dataset to a list of conditions
-    sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
-
-    if "means" in X_in.var:
-        means = cp.array(X_in.var["means"].to_numpy())
-    else:
-        means = cp.zeros((1, C.shape[0]))
-
-    if isinstance(X_in.X, np.ndarray):
-        gpu_move = cp.array
-    else:
-        gpu_move = cupy_sparse.csr_matrix
 
     projections: list[np.ndarray] = []
     projected_X = cp.empty((A.shape[0], B.shape[0], C.shape[0]))
 
-    for i in range(np.amax(sgIndex) + 1):
+    for i in range(len(X_list)):
         # Prepare CuPy matrix
-        mat = gpu_move(X_in.X[sgIndex == i])  # type: ignore
+        if isinstance(X_list[0], np.ndarray):
+            mat = cp.array(X_list[i])
+        else:
+            mat = cupy_sparse.csr_matrix(X_list[i])
 
         lhs = cp.array((A[i] * C) @ B.T)
         U, _, Vh = cp.linalg.svd(mat @ lhs - means @ lhs, full_matrices=False)
