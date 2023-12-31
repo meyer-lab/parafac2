@@ -25,7 +25,7 @@ def parafac2_init(
     sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
     n_cond = np.amax(sgIndex) + 1
 
-    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state)  # type: ignore
+    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state, n_iter=4)  # type: ignore
 
     factors = [cp.ones((n_cond, rank)), cp.eye(rank), cp.array(C.T)]
     return factors
@@ -107,9 +107,10 @@ def parafac2_nd(
         _, factors = parafac(
             projected_X,
             rank,
-            n_iter_max=10,
+            n_iter_max=30,
+            linesearch=True,
             init=(None, factors),  # type: ignore
-            tol=False,
+            tol=1e-13,
             normalize_factors=False,
             l2_reg=0.0001,  # type: ignore
         )
