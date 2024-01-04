@@ -110,7 +110,7 @@ def parafac2_nd(
             n_iter_max=30,
             linesearch=True,
             init=(None, factors),  # type: ignore
-            tol=1e-13,
+            tol=1.0e-16,
             normalize_factors=False,
             l2_reg=0.0001,  # type: ignore
         )
