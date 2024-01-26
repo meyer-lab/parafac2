@@ -33,9 +33,10 @@ def pf2_to_anndata(X_list, sparse=False):
     return X_merged
 
 
-def test_init_reprod():
+@pytest.mark.parametrize("sparse", [False, True])
+def test_init_reprod(sparse: bool):
     """Test for reproducibility with the dense formulation."""
-    X_ann = pf2_to_anndata(X, sparse=False)
+    X_ann = pf2_to_anndata(X, sparse=sparse)
 
     f1 = parafac2_init(X_ann, rank=3, random_state=1)
     f2 = parafac2_init(X_ann, rank=3, random_state=1)
@@ -86,7 +87,7 @@ def test_parafac2(sparse: bool):
     np.testing.assert_allclose(e1, e2)
     for ii in range(3):
         np.testing.assert_allclose(f1[ii], f2[ii], atol=1e-7, rtol=1e-6)
-        np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-7, rtol=1e-6)
+        np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-12, rtol=1e-12)
 
     # Compare to TensorLy
     np.testing.assert_allclose(w1, wT, rtol=0.02)  # type: ignore
