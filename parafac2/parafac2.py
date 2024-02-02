@@ -1,11 +1,12 @@
 import os
 from copy import deepcopy
 import anndata
-from sklearn.utils.extmath import randomized_svd
 import numpy as np
 import cupy as cp
 from tqdm import tqdm
 import tensorly as tl
+from cupyx.scipy.sparse import csr_matrix
+from cupyx.scipy.sparse.linalg import svds
 from tensorly.decomposition import parafac
 from .utils import (
     reconstruction_error,
@@ -25,9 +26,20 @@ def parafac2_init(
     sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
     n_cond = np.amax(sgIndex) + 1
 
-    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state, n_iter=4)  # type: ignore
+    tl.set_backend("cupy")
 
-    factors = [cp.ones((n_cond, rank)), cp.eye(rank), cp.array(C.T)]
+    cp.random.seed(random_state)
+
+    if isinstance(X_in.X, np.ndarray):
+        mat = cp.array(X_in.X)
+    else:
+        mat = csr_matrix(X_in.X)
+    
+    _, _, C = svds(mat, rank)
+
+    tl.set_backend("numpy")
+
+    factors = [cp.ones((n_cond, rank)), cp.eye(rank), C.T]
     return factors
 
 
@@ -35,7 +47,7 @@ def parafac2_nd(
     X_in: anndata.AnnData,
     rank: int,
     n_iter_max: int = 200,
-    tol: float = 1e-6,
+    tol: float = 1e-7,
     random_state=None,
 ):
     r"""The same interface as regular PARAFAC2."""
@@ -107,10 +119,9 @@ def parafac2_nd(
         _, factors = parafac(
             projected_X,
             rank,
-            n_iter_max=30,
-            linesearch=True,
+            n_iter_max=20,
             init=(None, factors),  # type: ignore
-            tol=1.0e-16,
+            tol=None,
             normalize_factors=False,
             l2_reg=0.0001,  # type: ignore
         )

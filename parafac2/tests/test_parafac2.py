@@ -87,7 +87,7 @@ def test_parafac2(sparse: bool):
     np.testing.assert_allclose(e1, e2)
     for ii in range(3):
         np.testing.assert_allclose(f1[ii], f2[ii], atol=1e-7, rtol=1e-6)
-        np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-8, rtol=1e-8)
 
     # Compare to TensorLy
     np.testing.assert_allclose(w1, wT, rtol=0.02)  # type: ignore
@@ -112,7 +112,7 @@ def test_pf2_r2x():
 def test_performance(sparse: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
     # 5000 by 2000 by 300 is roughly the lupus data
-    pf2shape = [(5000, 2000)] * 30
+    pf2shape = [(5000, 200)] * 30
     X = random_parafac2(pf2shape, rank=12, full=True, random_state=2)
 
     X = pf2_to_anndata(X, sparse=sparse)

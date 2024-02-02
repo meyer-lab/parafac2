@@ -13,7 +13,11 @@ def anndata_to_list(X_in: anndata.AnnData) -> list[np.ndarray | sps.csr_array]:
 
     X_list = []
     for i in range(np.amax(sgIndex) + 1):
-        X_list.append(X_in.X[sgIndex == i])  # type: ignore
+        # Prepare CuPy matrix
+        if isinstance(X_in.X, np.ndarray):
+            X_list.append(cp.array(X_in.X[sgIndex == i]))  # type: ignore
+        else:
+            X_list.append(cupy_sparse.csr_matrix(X_in.X[sgIndex == i]))  # type: ignore
 
     return X_list
 
@@ -43,19 +47,16 @@ def calc_total_norm(X: anndata.AnnData) -> float:
 
 
 def project_data(
-    X_list, means, factors: list[np.ndarray | cp.ndarray]
+    X_list, means: cp.ndarray, factors: list[np.ndarray | cp.ndarray]
 ) -> tuple[list[np.ndarray], cp.ndarray]:
     A, B, C = factors
 
     projections: list[np.ndarray] = []
     projected_X = cp.empty((A.shape[0], B.shape[0], C.shape[0]))
 
-    for i in range(len(X_list)):
-        # Prepare CuPy matrix
-        if isinstance(X_list[0], np.ndarray):
-            mat = cp.array(X_list[i])
-        else:
-            mat = cupy_sparse.csr_matrix(X_list[i])
+    for i, mat in enumerate(X_list):
+        if isinstance(mat, np.ndarray):
+            mat = cp.array(mat)
 
         lhs = cp.array((A[i] * C) @ B.T)
         U, _, Vh = cp.linalg.svd(mat @ lhs - means @ lhs, full_matrices=False)
