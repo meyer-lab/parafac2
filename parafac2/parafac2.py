@@ -26,18 +26,14 @@ def parafac2_init(
     sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
     n_cond = np.amax(sgIndex) + 1
 
-    tl.set_backend("cupy")
-
     cp.random.seed(random_state)
 
     if isinstance(X_in.X, np.ndarray):
         mat = cp.array(X_in.X)
     else:
         mat = csr_matrix(X_in.X)
-    
-    _, _, C = svds(mat, rank)
 
-    tl.set_backend("numpy")
+    _, _, C = svds(mat, rank)
 
     factors = [cp.ones((n_cond, rank)), cp.eye(rank), C.T]
     return factors
@@ -47,7 +43,7 @@ def parafac2_nd(
     X_in: anndata.AnnData,
     rank: int,
     n_iter_max: int = 200,
-    tol: float = 1e-7,
+    tol: float = 1e-9,
     random_state=None,
 ):
     r"""The same interface as regular PARAFAC2."""
@@ -76,11 +72,10 @@ def parafac2_nd(
     tq = tqdm(range(n_iter_max), disable=(not verbose))
     for iter in tq:
         lineIter = iter % 2 == 0 and iter > 5
+        jump = iter ** (1.0 / acc_pow)
 
         # Initiate line search
         if lineIter:
-            jump = iter ** (1.0 / acc_pow)
-
             # Estimate error with line search
             factors_ls = [
                 factors_old[ii] + (factors[ii] - factors_old[ii]) * jump  # type: ignore
@@ -106,9 +101,6 @@ def parafac2_nd(
                     acc_pow += 1.0
                     acc_fail = 0
 
-                    if verbose:
-                        print("Reducing acceleration.")
-
         if lineIter is False:
             projections, projected_X = project_data(X_list, means, factors)
             err = reconstruction_error(factors, projections, projected_X, norm_tensor)
@@ -117,18 +109,18 @@ def parafac2_nd(
 
         factors_old = deepcopy(factors)
         _, factors = parafac(
-            projected_X,
+            projected_X,  # type: ignore
             rank,
-            n_iter_max=20,
+            n_iter_max=10,
             init=(None, factors),  # type: ignore
-            tol=None,
+            tol=None,  # type: ignore
             normalize_factors=False,
             l2_reg=0.0001,  # type: ignore
         )
 
         if iter > 1:
             delta = errs[-2] - errs[-1]
-            tq.set_postfix(R2X=1.0 - errs[-1], Δ=delta, refresh=False)
+            tq.set_postfix(R2X=1.0 - errs[-1], Δ=delta, jump=jump, refresh=False)
 
             if delta < tol:
                 break

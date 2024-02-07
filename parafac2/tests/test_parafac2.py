@@ -148,7 +148,7 @@ def test_pf2_proj_centering():
 
     X_pf = parafac2_to_slices((None, factors, projections))
 
-    norm_X_sq = np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])) # type: ignore
+    norm_X_sq = np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf]))  # type: ignore
 
     projections, projected_X = project_data(X_pf, cp.zeros((1, 300)), factors)
     factors_gpu = [cp.array(f) for f in factors]
