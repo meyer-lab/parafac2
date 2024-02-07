@@ -58,7 +58,7 @@ def project_data(
         if isinstance(mat, np.ndarray):
             mat = cp.array(mat)
 
-        lhs = cp.array((A[i] * C) @ B.T)
+        lhs = cp.array((A[i] * C) @ B.T, copy=False)
         U, _, Vh = cp.linalg.svd(mat @ lhs - means @ lhs, full_matrices=False)
         proj = U @ Vh
 
