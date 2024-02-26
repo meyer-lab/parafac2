@@ -52,7 +52,7 @@ def test_init_reprod(sparse: bool):
     cp.testing.assert_array_equal(proj_X1, proj_X2)
 
     for ii in range(len(proj1)):
-        np.testing.assert_array_equal(proj1[ii], proj2[ii])
+        cp.testing.assert_array_equal(proj1[ii], proj2[ii])
 
 
 @pytest.mark.parametrize("sparse", [False, True])
@@ -101,7 +101,10 @@ def test_pf2_r2x():
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
 
     p, projected_X = project_data(X, cp.zeros((1, X[0].shape[1])), f)
-    errCMF = reconstruction_error(f, p, cp.asnumpy(projected_X), norm_tensor)
+    errCMF = reconstruction_error(f, p, projected_X, norm_tensor)
+
+    f = [cp.asnumpy(ff) for ff in f]
+    p = [cp.asnumpy(pp) for pp in p]
 
     err = _parafac2_reconstruction_error(X, (w, f, p)) ** 2
 
@@ -148,7 +151,7 @@ def test_pf2_proj_centering():
 
     X_pf = parafac2_to_slices((None, factors, projections))
 
-    norm_X_sq = np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf]))  # type: ignore
+    norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))  # type: ignore
 
     projections, projected_X = project_data(X_pf, cp.zeros((1, 300)), factors)
     factors_gpu = [cp.array(f) for f in factors]

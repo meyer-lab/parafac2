@@ -55,6 +55,7 @@ def parafac2_nd(
 
     norm_tensor = calc_total_norm(X_in)
     factors = parafac2_init(X_in, rank, random_state)
+    factors_old = deepcopy(factors)
 
     X_list = anndata_to_list(X_in)
 
@@ -64,7 +65,7 @@ def parafac2_nd(
         means = cp.zeros((1, factors[2].shape[0]))
 
     errs: list[float] = []
-    projections: list[np.ndarray] = []
+    projections: list[cp.ndarray] = []
     err = float("NaN")
 
     tl.set_backend("cupy")
@@ -111,11 +112,10 @@ def parafac2_nd(
         _, factors = parafac(
             projected_X,  # type: ignore
             rank,
-            n_iter_max=10,
+            n_iter_max=3,
             init=(None, factors),  # type: ignore
             tol=None,  # type: ignore
             normalize_factors=False,
-            l2_reg=0.0001,  # type: ignore
         )
 
         if iter > 1:
@@ -129,4 +129,5 @@ def parafac2_nd(
     tl.set_backend("numpy")
 
     factors = [cp.asnumpy(f) for f in factors]
+    projections = [cp.asnumpy(p) for p in projections]
     return standardize_pf2(factors, projections), R2X
