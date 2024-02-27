@@ -42,7 +42,7 @@ def parafac2_init(
 def parafac2_nd(
     X_in: anndata.AnnData,
     rank: int,
-    n_iter_max: int = 200,
+    n_iter_max: int = 500,
     tol: float = 1e-9,
     random_state=None,
 ):
@@ -50,8 +50,11 @@ def parafac2_nd(
     # Verbose if this is not an automated build
     verbose = "CI" not in os.environ
 
-    acc_pow: float = 2.0  # Extrapolate to the iteration^(1/acc_pow) ahead
-    acc_fail: int = 0  # How many times acceleration have failed
+    gamma = 1.1
+    gamma_bar = 1.03
+    eta = 1.5
+    beta_i = 0.05
+    beta_i_bar = 1.0
 
     norm_tensor = calc_total_norm(X_in)
     factors = parafac2_init(X_in, rank, random_state)
@@ -64,47 +67,45 @@ def parafac2_nd(
     else:
         means = cp.zeros((1, factors[2].shape[0]))
 
-    errs: list[float] = []
-    projections: list[cp.ndarray] = []
-    err = float("NaN")
+    projections, projected_X = project_data(X_list, means, factors)
+    err = reconstruction_error(
+        factors, projections, projected_X, norm_tensor
+    )
+    errs = [err]
 
     tl.set_backend("cupy")
 
     tq = tqdm(range(n_iter_max), disable=(not verbose))
     for iter in tq:
-        lineIter = iter % 2 == 0 and iter > 5
-        jump = iter ** (1.0 / acc_pow)
+        jump = beta_i + 1.0
 
-        # Initiate line search
-        if lineIter:
-            # Estimate error with line search
-            factors_ls = [
-                factors_old[ii] + (factors[ii] - factors_old[ii]) * jump  # type: ignore
-                for ii in range(3)
-            ]
+        # Estimate error with line search
+        factors_ls = [
+            factors_old[ii] + (factors[ii] - factors_old[ii]) * jump
+            for ii in range(3)
+        ]
 
-            projections_ls, projected_X_ls = project_data(X_list, means, factors)
-            err_ls = reconstruction_error(
-                factors_ls, projections_ls, projected_X_ls, norm_tensor
-            )
+        projections_ls, projected_X_ls = project_data(X_list, means, factors)
+        err_ls = reconstruction_error(
+            factors_ls, projections_ls, projected_X_ls, norm_tensor
+        )
 
-            if err_ls < errs[-1] * norm_tensor:
-                acc_fail = 0
-                err = err_ls
-                projections = projections_ls
-                projected_X = projected_X_ls
-                factors = factors_ls
-            else:
-                lineIter = False
-                acc_fail += 1
+        if err_ls < errs[-1] * norm_tensor:
+            err = err_ls
+            projections = projections_ls
+            projected_X = projected_X_ls
+            factors = factors_ls
 
-                if acc_fail >= 4:
-                    acc_pow += 1.0
-                    acc_fail = 0
+            beta_i = min(beta_i_bar, gamma * beta_i)
+            beta_i_bar = max(1.0, gamma_bar * beta_i_bar)
+        else:
+            beta_i_bar = beta_i
+            beta_i = beta_i / eta
 
-        if lineIter is False:
             projections, projected_X = project_data(X_list, means, factors)
-            err = reconstruction_error(factors, projections, projected_X, norm_tensor)
+            err = reconstruction_error(
+                factors, projections, projected_X, norm_tensor
+            )
 
         errs.append(err / norm_tensor)
 
@@ -118,12 +119,11 @@ def parafac2_nd(
             normalize_factors=False,
         )
 
-        if iter > 1:
-            delta = errs[-2] - errs[-1]
-            tq.set_postfix(R2X=1.0 - errs[-1], Δ=delta, jump=jump, refresh=False)
+        delta = errs[-2] - errs[-1]
+        tq.set_postfix(R2X=1.0 - errs[-1], Δ=delta, jump=jump, refresh=False)
 
-            if delta < tol:
-                break
+        if delta < tol:
+            break
 
     R2X = 1 - errs[-1]
     tl.set_backend("numpy")
