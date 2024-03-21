@@ -13,7 +13,11 @@ def anndata_to_list(X_in: anndata.AnnData) -> list[np.ndarray | sps.csr_array]:
 
     X_list = []
     for i in range(np.amax(sgIndex) + 1):
-        X_list.append(X_in.X[sgIndex == i])  # type: ignore
+        # Prepare CuPy matrix
+        if isinstance(X_in.X, np.ndarray):
+            X_list.append(cp.array(X_in.X[sgIndex == i]))  # type: ignore
+        else:
+            X_list.append(cupy_sparse.csr_matrix(X_in.X[sgIndex == i]))  # type: ignore
 
     return X_list
 
@@ -43,25 +47,22 @@ def calc_total_norm(X: anndata.AnnData) -> float:
 
 
 def project_data(
-    X_list, means, factors: list[np.ndarray | cp.ndarray]
-) -> tuple[list[np.ndarray], cp.ndarray]:
+    X_list: list, means: cp.ndarray, factors: list[np.ndarray | cp.ndarray]
+) -> tuple[list[cp.ndarray], cp.ndarray]:
     A, B, C = factors
 
-    projections: list[np.ndarray] = []
+    projections: list[cp.ndarray] = []
     projected_X = cp.empty((A.shape[0], B.shape[0], C.shape[0]))
 
-    for i in range(len(X_list)):
-        # Prepare CuPy matrix
-        if isinstance(X_list[0], np.ndarray):
-            mat = cp.array(X_list[i])
-        else:
-            mat = cupy_sparse.csr_matrix(X_list[i])
+    for i, mat in enumerate(X_list):
+        if isinstance(mat, np.ndarray):
+            mat = cp.array(mat)
 
-        lhs = cp.array((A[i] * C) @ B.T)
+        lhs = cp.array((A[i] * C) @ B.T, copy=False)
         U, _, Vh = cp.linalg.svd(mat @ lhs - means @ lhs, full_matrices=False)
         proj = U @ Vh
 
-        projections.append(cp.asnumpy(proj))
+        projections.append(proj)
 
         # Account for centering
         centering = cp.outer(cp.sum(proj, axis=0), means)
@@ -71,28 +72,25 @@ def project_data(
 
 
 def reconstruction_error(
-    factors: list,
-    projections: list[np.ndarray],
+    factors: list[np.ndarray | cp.ndarray],
+    projections: list[cp.ndarray],
     projected_X: cp.ndarray,
     norm_X_sq: float,
-):
+) -> float:
     """Calculate the reconstruction error from the factors and projected data."""
-    A, B, C = factors
-    xp = cp.get_array_module(B)
-    CtC = cp.asnumpy(C.T @ C)
+    A, B, C = [cp.array(f, copy=False) for f in factors]
+    CtC = C.T @ C
 
     norm_sq_err = norm_X_sq
 
     for i, proj in enumerate(projections):
-        B_i = (proj @ cp.asnumpy(B)) * cp.asnumpy(A[i])
+        B_i = (proj @ B) * A[i]
 
         # trace of the multiplication products
-        norm_sq_err -= cp.asnumpy(
-            2.0 * xp.trace(A[i][:, xp.newaxis] * B.T @ projected_X[i] @ C)
-        )
+        norm_sq_err -= 2.0 * cp.trace(A[i][:, cp.newaxis] * B.T @ projected_X[i] @ C)
         norm_sq_err += ((B_i.T @ B_i) * CtC).sum()
 
-    return norm_sq_err
+    return cp.asnumpy(norm_sq_err)
 
 
 def standardize_pf2(

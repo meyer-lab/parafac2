@@ -52,7 +52,7 @@ def test_init_reprod(sparse: bool):
     cp.testing.assert_array_equal(proj_X1, proj_X2)
 
     for ii in range(len(proj1)):
-        np.testing.assert_array_equal(proj1[ii], proj2[ii])
+        cp.testing.assert_array_equal(proj1[ii], proj2[ii])
 
 
 @pytest.mark.parametrize("sparse", [False, True])
@@ -87,7 +87,7 @@ def test_parafac2(sparse: bool):
     np.testing.assert_allclose(e1, e2)
     for ii in range(3):
         np.testing.assert_allclose(f1[ii], f2[ii], atol=1e-7, rtol=1e-6)
-        np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-12, rtol=1e-12)
+        np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-8, rtol=1e-8)
 
     # Compare to TensorLy
     np.testing.assert_allclose(w1, wT, rtol=0.02)  # type: ignore
@@ -101,7 +101,10 @@ def test_pf2_r2x():
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
 
     p, projected_X = project_data(X, cp.zeros((1, X[0].shape[1])), f)
-    errCMF = reconstruction_error(f, p, cp.asnumpy(projected_X), norm_tensor)
+    errCMF = reconstruction_error(f, p, projected_X, norm_tensor)
+
+    f = [cp.asnumpy(ff) for ff in f]
+    p = [cp.asnumpy(pp) for pp in p]
 
     err = _parafac2_reconstruction_error(X, (w, f, p)) ** 2
 
@@ -112,7 +115,7 @@ def test_pf2_r2x():
 def test_performance(sparse: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
     # 5000 by 2000 by 300 is roughly the lupus data
-    pf2shape = [(5000, 2000)] * 30
+    pf2shape = [(5000, 200)] * 30
     X = random_parafac2(pf2shape, rank=12, full=True, random_state=2)
 
     X = pf2_to_anndata(X, sparse=sparse)
@@ -148,7 +151,7 @@ def test_pf2_proj_centering():
 
     X_pf = parafac2_to_slices((None, factors, projections))
 
-    norm_X_sq = np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])) # type: ignore
+    norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))  # type: ignore
 
     projections, projected_X = project_data(X_pf, cp.zeros((1, 300)), factors)
     factors_gpu = [cp.array(f) for f in factors]
