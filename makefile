@@ -10,4 +10,4 @@ clean:
 	rm profile.svg profile
 
 mypy:
-	poetry run mypy --install-types --non-interactive --ignore-missing-imports parafac2
+	poetry run mypy --install-types --non-interactive --ignore-missing-imports --check-untyped-defs parafac2

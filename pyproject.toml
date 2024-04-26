@@ -19,6 +19,7 @@ anndata = "^0.10"
 pytest = "^8.0"
 pytest-cov = "^4.1"
 mypy = "^1.8"
+ruff = "^0.4"
 
 [build-system]
 requires = ["poetry-core"]

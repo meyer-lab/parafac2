@@ -1,6 +1,7 @@
 """
 Test the data import.
 """
+
 import pytest
 import anndata
 from scipy.sparse import csr_matrix, random
@@ -16,7 +17,7 @@ from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
 
 pf2shape = [(100, 800)] * 4
 X = random_parafac2(pf2shape, rank=3, full=True, random_state=2)
-norm_tensor = np.linalg.norm(X) ** 2  # type: ignore
+norm_tensor = float(np.linalg.norm(X) ** 2)
 
 
 def pf2_to_anndata(X_list, sparse=False):
