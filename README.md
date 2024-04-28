@@ -6,6 +6,16 @@ scPf2 is a...
 
 ## Installation
 
+## Requirements
+
+### Defining which cells come from each condition
+
+Your AnnData object must include an observations column `condition_unique_idxs` that is a 0-indexed array of which condition each cell is derived from.
+
+## Outputs
+
+TBD.
+
 ## Citation
 
 TBD.

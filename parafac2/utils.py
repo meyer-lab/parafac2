@@ -48,12 +48,13 @@ def calc_total_norm(X: anndata.AnnData) -> float:
 
 
 def project_data(
-    X_list: list, means: cp.ndarray, factors: list[np.ndarray]
+    X_list: list, means: np.ndarray, factors: list[np.ndarray]
 ) -> tuple[list[np.ndarray], np.ndarray]:
     A, B, C = factors
 
     projections: list[np.ndarray] = []
     projected_X = cp.empty((A.shape[0], B.shape[0], C.shape[0]))
+    means = cp.array(means)
 
     for i, mat in enumerate(X_list):
         if isinstance(mat, np.ndarray):

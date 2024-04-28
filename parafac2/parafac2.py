@@ -2,7 +2,6 @@ import os
 from copy import deepcopy
 import anndata
 import numpy as np
-import cupy as cp
 from tqdm import tqdm
 from scipy.sparse.linalg import svds
 from tensorly.decomposition import parafac
@@ -37,7 +36,7 @@ def parafac2_init(
     X_in: anndata.AnnData,
     rank: int,
     random_state=None,
-) -> list[cp.ndarray]:
+) -> list[np.ndarray]:
     # Index dataset to a list of conditions
     sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
     n_cond = np.amax(sgIndex) + 1
@@ -72,9 +71,9 @@ def parafac2_nd(
     X_list = anndata_to_list(X_in)
 
     if "means" in X_in.var:
-        means = cp.array(X_in.var["means"].to_numpy())
+        means = np.array(X_in.var["means"].to_numpy())
     else:
-        means = cp.zeros((1, factors[2].shape[0]))
+        means = np.zeros((1, factors[2].shape[0]))
 
     projections, projected_X = project_data(X_list, means, factors)
     err = reconstruction_error(factors, projections, projected_X, norm_tensor)
