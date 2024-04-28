@@ -1,2 +1,9 @@
-# parafac2
-A scalable implementation of PARAFAC2 with line search.
+# Integrating and dissecting single cell populations across conditions at high resolution with PARAFAC2
+
+scPf2 is a...
+
+## Installation
+
+## Citation
+
+TBD.
