@@ -155,8 +155,7 @@ def test_pf2_proj_centering():
     norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))  # type: ignore
 
     projections, projected_X = project_data(X_pf, cp.zeros((1, 300)), factors)
-    factors_gpu = [cp.array(f) for f in factors]
-    norm_sq_err = reconstruction_error(factors_gpu, projections, projected_X, norm_X_sq)
+    norm_sq_err = reconstruction_error(factors, projections, projected_X, norm_X_sq)
 
     np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
 
@@ -166,7 +165,7 @@ def test_pf2_proj_centering():
 
     projections, projected_X_mean = project_data(X_pf, cp.array(means), factors)
     norm_sq_err_centered = reconstruction_error(
-        factors_gpu, projections, projected_X, norm_X_sq
+        factors, projections, projected_X, norm_X_sq
     )
 
     cp.testing.assert_allclose(projected_X, projected_X_mean)

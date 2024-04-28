@@ -4,7 +4,6 @@ import anndata
 import numpy as np
 import cupy as cp
 from tqdm import tqdm
-import tensorly as tl
 from cupyx.scipy.sparse import csr_matrix
 from cupyx.scipy.sparse.linalg import svds
 from tensorly.decomposition import parafac
@@ -53,7 +52,7 @@ def parafac2_init(
 
     _, _, C = svds(mat, rank)
 
-    factors = [cp.ones((n_cond, rank)), cp.eye(rank), C.T]
+    factors = [np.ones((n_cond, rank)), np.eye(rank), cp.asnumpy(C.T)]
     return factors
 
 
@@ -89,10 +88,8 @@ def parafac2_nd(
     err = reconstruction_error(factors, projections, projected_X, norm_tensor)
     errs = [err]
 
-    tl.set_backend("cupy")
-
     tq = tqdm(range(n_iter_max), disable=(not verbose))
-    for iter in tq:
+    for _ in tq:
         jump = beta_i + 1.0
 
         # Estimate error with line search
@@ -139,8 +136,4 @@ def parafac2_nd(
             break
 
     R2X = 1 - errs[-1]
-    tl.set_backend("numpy")
-
-    factors = [cp.asnumpy(f) for f in factors]
-    projections = [cp.asnumpy(p) for p in projections]
     return standardize_pf2(factors, projections), R2X

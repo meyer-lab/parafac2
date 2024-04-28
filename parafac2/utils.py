@@ -47,11 +47,11 @@ def calc_total_norm(X: anndata.AnnData) -> float:
 
 
 def project_data(
-    X_list: list, means: cp.ndarray, factors: list[np.ndarray | cp.ndarray]
-) -> tuple[list[cp.ndarray], cp.ndarray]:
+    X_list: list, means: cp.ndarray, factors: list[np.ndarray]
+) -> tuple[list[np.ndarray], np.ndarray]:
     A, B, C = factors
 
-    projections: list[cp.ndarray] = []
+    projections: list[np.ndarray] = []
     projected_X = cp.empty((A.shape[0], B.shape[0], C.shape[0]))
 
     for i, mat in enumerate(X_list):
@@ -62,23 +62,23 @@ def project_data(
         U, _, Vh = cp.linalg.svd(mat @ lhs - means @ lhs, full_matrices=False)
         proj = U @ Vh
 
-        projections.append(proj)
+        projections.append(cp.asnumpy(proj))
 
         # Account for centering
         centering = cp.outer(cp.sum(proj, axis=0), means)
         projected_X[i, :, :] = proj.T @ mat - centering
 
-    return projections, projected_X
+    return projections, cp.asnumpy(projected_X)
 
 
 def reconstruction_error(
-    factors: list[np.ndarray | cp.ndarray],
-    projections: list[cp.ndarray],
-    projected_X: cp.ndarray,
+    factors: list[np.ndarray],
+    projections: list[np.ndarray],
+    projected_X: np.ndarray,
     norm_X_sq: float,
 ) -> float:
     """Calculate the reconstruction error from the factors and projected data."""
-    A, B, C = [cp.array(f, copy=False) for f in factors]
+    A, B, C = factors
     CtC = C.T @ C
 
     norm_sq_err = norm_X_sq
@@ -87,10 +87,10 @@ def reconstruction_error(
         B_i = (proj @ B) * A[i]
 
         # trace of the multiplication products
-        norm_sq_err -= 2.0 * cp.trace(A[i][:, cp.newaxis] * B.T @ projected_X[i] @ C)
+        norm_sq_err -= 2.0 * np.trace(A[i][:, np.newaxis] * B.T @ projected_X[i] @ C)
         norm_sq_err += ((B_i.T @ B_i) * CtC).sum()
 
-    return cp.asnumpy(norm_sq_err)
+    return norm_sq_err
 
 
 def standardize_pf2(
