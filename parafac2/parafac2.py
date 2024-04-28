@@ -4,8 +4,7 @@ import anndata
 import numpy as np
 import cupy as cp
 from tqdm import tqdm
-from cupyx.scipy.sparse import csr_matrix
-from cupyx.scipy.sparse.linalg import svds
+from scipy.sparse.linalg import svds
 from tensorly.decomposition import parafac
 from .utils import (
     reconstruction_error,
@@ -43,16 +42,9 @@ def parafac2_init(
     sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
     n_cond = np.amax(sgIndex) + 1
 
-    cp.random.seed(random_state)
+    _, _, C = svds(X_in.X, rank, random_state=random_state)
 
-    if isinstance(X_in.X, np.ndarray):
-        mat = cp.array(X_in.X)
-    else:
-        mat = csr_matrix(X_in.X)
-
-    _, _, C = svds(mat, rank)
-
-    factors = [np.ones((n_cond, rank)), np.eye(rank), cp.asnumpy(C.T)]
+    factors = [np.ones((n_cond, rank)), np.eye(rank), C.T]
     return factors
 
 
