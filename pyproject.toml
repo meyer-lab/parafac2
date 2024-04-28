@@ -1,8 +1,13 @@
 [tool.poetry]
 name = "parafac2"
 version = "0.1.0"
-description = ""
+description = "An implementation of PARAFAC2 that handles sparsity for single cell data."
 authors = ["Aaron Meyer <git@asmlab.org>"]
+maintainers = [
+    "Aaron Meyer <git@asmlab.org>",
+    "Andrew Ramirez",
+]
+license = "MIT"
 readme = "README.md"
 
 [tool.poetry.dependencies]

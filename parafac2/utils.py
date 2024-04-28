@@ -15,15 +15,16 @@ def anndata_to_list(X_in: anndata.AnnData) -> list[np.ndarray | sps.csr_array]:
     for i in range(np.amax(sgIndex) + 1):
         # Prepare CuPy matrix
         if isinstance(X_in.X, np.ndarray):
-            X_list.append(cp.array(X_in.X[sgIndex == i]))  # type: ignore
+            X_list.append(cp.array(X_in.X[sgIndex == i]))
         else:
-            X_list.append(cupy_sparse.csr_matrix(X_in.X[sgIndex == i]))  # type: ignore
+            X_list.append(cupy_sparse.csr_matrix(X_in.X[sgIndex == i]))
 
     return X_list
 
 
 def calc_total_norm(X: anndata.AnnData) -> float:
-    """Calculate the total norm of the dataset, with centering"""
+    """Calculate the total norm of the dataset, with centering.
+    This provides a much more performant way to calculate the norm given sparsity."""
     if isinstance(X.X, np.ndarray):
         return float(np.linalg.norm(X.X) ** 2.0)
 
