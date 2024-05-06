@@ -2,8 +2,10 @@ import os
 from copy import deepcopy
 import anndata
 import numpy as np
+import cupy as cp
 from tqdm import tqdm
 from scipy.sparse.linalg import svds
+import tensorly as tl
 from tensorly.decomposition import parafac
 from .utils import (
     reconstruction_error,
@@ -50,8 +52,8 @@ def parafac2_init(
 def parafac2_nd(
     X_in: anndata.AnnData,
     rank: int,
-    n_iter_max: int = 500,
-    tol: float = 1e-9,
+    n_iter_max: int = 200,
+    tol: float = 1e-6,
     random_state=None,
 ):
     r"""The same interface as regular PARAFAC2."""
@@ -110,18 +112,21 @@ def parafac2_nd(
 
         errs.append(err / norm_tensor)
 
+        tl.set_backend("cupy")
         factors_old = deepcopy(factors)
         _, factors = parafac(
-            projected_X,  # type: ignore
+            cp.array(projected_X),  # type: ignore
             rank,
-            n_iter_max=3,
-            init=(None, factors),  # type: ignore
-            tol=None,  # type: ignore
+            n_iter_max=20,
+            init=(None, [cp.array(f) for f in factors]),  # type: ignore
+            tol=None, # type: ignore
             normalize_factors=False,
         )
+        tl.set_backend("numpy")
+        factors = [cp.asnumpy(f) for f in factors]
 
         delta = errs[-2] - errs[-1]
-        tq.set_postfix(R2X=1.0 - errs[-1], Δ=delta, jump=jump, refresh=False)
+        tq.set_postfix(error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, jump=jump, refresh=False)
 
         if delta < tol:
             break
