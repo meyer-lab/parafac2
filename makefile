@@ -1,6 +1,6 @@
 
 test:
-	poetry run pytest -s -x -v
+	poetry run pytest -s -x -v -Werror
 
 testprofile:
 	poetry run python3 -m cProfile -o profile -m pytest -s -x -v
