@@ -16,7 +16,7 @@ from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
 
 
 pf2shape = [(500, 2000)] * 8
-X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2) # type: ignore
+X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)  # type: ignore
 norm_tensor = float(np.linalg.norm(X) ** 2)
 
 
@@ -27,7 +27,10 @@ def pf2_to_anndata(X_list, sparse=False):
     X_ann = [anndata.AnnData(XX) for XX in X_list]
 
     X_merged = anndata.concat(
-        X_ann, label="condition_unique_idxs", keys=np.arange(len(X_list)), index_unique="-"
+        X_ann,
+        label="condition_unique_idxs",
+        keys=np.arange(len(X_list)),
+        index_unique="-",
     )
     X_merged.var["means"] = np.zeros(X_list[0].shape[1])
 

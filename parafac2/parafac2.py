@@ -119,14 +119,16 @@ def parafac2_nd(
             rank,
             n_iter_max=20,
             init=(None, [cp.array(f) for f in factors]),  # type: ignore
-            tol=None, # type: ignore
+            tol=None,  # type: ignore
             normalize_factors=False,
         )
         tl.set_backend("numpy")
         factors = [cp.asnumpy(f) for f in factors]
 
         delta = errs[-2] - errs[-1]
-        tq.set_postfix(error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, jump=jump, refresh=False)
+        tq.set_postfix(
+            error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, jump=jump, refresh=False
+        )
 
         if delta < tol:
             break
