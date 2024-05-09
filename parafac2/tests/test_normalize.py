@@ -10,4 +10,3 @@ def test_normalize():
     adata.obs["condition"] = choice(["A", "B", "C"], size=random_matrix.shape[0])
 
     prepare_dataset(adata, "condition", 0.1)
-
