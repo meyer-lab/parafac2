@@ -1,7 +1,9 @@
 import os
+from typing import Optional
 from copy import deepcopy
 import anndata
 import numpy as np
+from numpy.random import BitGenerator
 import cupy as cp
 from tqdm import tqdm
 from scipy.sparse.linalg import svds
@@ -17,7 +19,8 @@ from .utils import (
 
 
 def store_pf2(
-    X: anndata.AnnData, parafac2_output: tuple[np.ndarray, list, list]
+    X: anndata.AnnData,
+    parafac2_output: tuple[np.ndarray, list[np.ndarray], list[np.ndarray]],
 ) -> anndata.AnnData:
     """Store the Pf2 results into the anndata object."""
     sgIndex = X.obs["condition_unique_idxs"]
@@ -27,7 +30,7 @@ def store_pf2(
 
     X.obsm["projections"] = np.zeros((X.shape[0], len(X.uns["Pf2_weights"])))
     for i, p in enumerate(parafac2_output[2]):
-        X.obsm["projections"][sgIndex == i, :] = p
+        X.obsm["projections"][sgIndex == i, :] = p  # type: ignore
 
     X.obsm["weighted_projections"] = X.obsm["projections"] @ X.uns["Pf2_B"]
 
@@ -37,7 +40,7 @@ def store_pf2(
 def parafac2_init(
     X_in: anndata.AnnData,
     rank: int,
-    random_state=None,
+    random_state: Optional[int | BitGenerator] = None,
 ) -> list[np.ndarray]:
     # Index dataset to a list of conditions
     sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
@@ -54,8 +57,8 @@ def parafac2_nd(
     rank: int,
     n_iter_max: int = 200,
     tol: float = 1e-6,
-    random_state=None,
-):
+    random_state: Optional[int | BitGenerator] = None,
+) -> tuple[tuple, float]:
     r"""The same interface as regular PARAFAC2."""
     # Verbose if this is not an automated build
     verbose = "CI" not in os.environ
