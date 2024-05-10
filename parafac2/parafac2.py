@@ -3,12 +3,11 @@ from typing import Optional
 from copy import deepcopy
 import anndata
 import numpy as np
-from numpy.random import BitGenerator
 import cupy as cp
 from tqdm import tqdm
-from scipy.sparse.linalg import svds
 import tensorly as tl
 from tensorly.decomposition import parafac
+from sklearn.utils.extmath import randomized_svd
 from .utils import (
     reconstruction_error,
     standardize_pf2,
@@ -40,13 +39,13 @@ def store_pf2(
 def parafac2_init(
     X_in: anndata.AnnData,
     rank: int,
-    random_state: Optional[int | BitGenerator] = None,
+    random_state: Optional[int] = None,
 ) -> list[np.ndarray]:
     # Index dataset to a list of conditions
     sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
     n_cond = np.amax(sgIndex) + 1
 
-    _, _, C = svds(X_in.X, rank, random_state=random_state)
+    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state) # type: ignore
 
     factors = [np.ones((n_cond, rank)), np.eye(rank), C.T]
     return factors
@@ -57,7 +56,7 @@ def parafac2_nd(
     rank: int,
     n_iter_max: int = 200,
     tol: float = 1e-6,
-    random_state: Optional[int | BitGenerator] = None,
+    random_state: Optional[int] = None,
 ) -> tuple[tuple, float]:
     r"""The same interface as regular PARAFAC2."""
     # Verbose if this is not an automated build
