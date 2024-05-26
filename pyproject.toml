@@ -14,7 +14,7 @@ readme = "README.md"
 python = ">=3.10,<3.13"
 numpy = "^1.26"
 scipy = "^1.12"
-tensorly = "0.8.1"
+tensorly = { git = "https://github.com/tensorly/tensorly.git", rev = "a21f84422876fb8b4c0d07ef116740b7cf9e8252" }
 tqdm = "^4.66"
 cupy-cuda12x = "^13.0"
 anndata = "^0.10"

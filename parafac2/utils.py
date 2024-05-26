@@ -73,28 +73,6 @@ def project_data(
     return projections, cp.asnumpy(projected_X)
 
 
-def reconstruction_error(
-    factors: list[np.ndarray],
-    projections: list[np.ndarray],
-    projected_X: np.ndarray,
-    norm_X_sq: float,
-) -> float:
-    """Calculate the reconstruction error from the factors and projected data."""
-    A, B, C = factors
-    CtC = C.T @ C
-
-    norm_sq_err = norm_X_sq
-
-    for i, proj in enumerate(projections):
-        B_i = (proj @ B) * A[i]
-
-        # trace of the multiplication products
-        norm_sq_err -= 2.0 * np.trace(A[i][:, np.newaxis] * B.T @ projected_X[i] @ C)
-        norm_sq_err += ((B_i.T @ B_i) * CtC).sum()
-
-    return norm_sq_err
-
-
 def standardize_pf2(
     factors: list[np.ndarray], projections: list[np.ndarray]
 ) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:

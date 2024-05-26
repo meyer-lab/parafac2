@@ -8,8 +8,8 @@ from tqdm import tqdm
 import tensorly as tl
 from tensorly.decomposition import parafac
 from sklearn.utils.extmath import randomized_svd
+from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
 from .utils import (
-    reconstruction_error,
     standardize_pf2,
     calc_total_norm,
     project_data,
@@ -69,6 +69,7 @@ def parafac2_nd(
     beta_i_bar = 1.0
 
     norm_tensor = calc_total_norm(X_in)
+    norm_tensor_sqrt = np.sqrt(norm_tensor)
     factors = parafac2_init(X_in, rank, random_state)
     factors_old = deepcopy(factors)
 
@@ -80,7 +81,12 @@ def parafac2_nd(
         means = np.zeros((1, factors[2].shape[0]))
 
     projections, projected_X = project_data(X_list, means, factors)
-    err = reconstruction_error(factors, projections, projected_X, norm_tensor)
+    err = (
+        _parafac2_reconstruction_error(
+            X_list, (None, factors, projections), norm_tensor_sqrt, projected_X
+        )
+        ** 2.0
+    )
     errs = [err]
 
     tq = tqdm(range(n_iter_max), disable=(not verbose))
@@ -93,8 +99,11 @@ def parafac2_nd(
         ]
 
         projections_ls, projected_X_ls = project_data(X_list, means, factors)
-        err_ls = reconstruction_error(
-            factors_ls, projections_ls, projected_X_ls, norm_tensor
+        err_ls = (
+            _parafac2_reconstruction_error(
+                X_list, (None, factors_ls, projections_ls), norm_tensor_sqrt, projected_X_ls
+            )
+            ** 2.0
         )
 
         if err_ls < errs[-1] * norm_tensor:
@@ -110,7 +119,12 @@ def parafac2_nd(
             beta_i = beta_i / eta
 
             projections, projected_X = project_data(X_list, means, factors)
-            err = reconstruction_error(factors, projections, projected_X, norm_tensor)
+            err = (
+                _parafac2_reconstruction_error(
+                    X_list, (None, factors, projections), norm_tensor_sqrt, projected_X
+                )
+                ** 2.0
+            )
 
         errs.append(err / norm_tensor)
 

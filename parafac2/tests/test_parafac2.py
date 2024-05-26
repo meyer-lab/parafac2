@@ -10,9 +10,8 @@ import cupy as cp
 from tensorly.decomposition import parafac2
 from tensorly.random import random_parafac2
 from ..parafac2 import parafac2_nd, parafac2_init
-from ..utils import reconstruction_error, project_data, calc_total_norm
+from ..utils import project_data, calc_total_norm
 from tensorly.parafac2_tensor import parafac2_to_slices
-from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
 
 
 pf2shape = [(500, 2000)] * 8
@@ -66,10 +65,6 @@ def test_parafac2(sparse: bool):
 
     (w1, f1, p1), e1 = parafac2_nd(X_ann, rank=3, random_state=1)
 
-    # Test that the model still matches the data
-    err = _parafac2_reconstruction_error(X, (w1, f1, p1)) ** 2
-    np.testing.assert_allclose(1.0 - err / norm_tensor, e1, rtol=1e-5)
-
     # Test reproducibility
     (w2, f2, p2), e2 = parafac2_nd(X_ann, rank=3, random_state=1)
     # Compare to TensorLy
@@ -98,21 +93,6 @@ def test_parafac2(sparse: bool):
     for ii in range(3):
         np.testing.assert_allclose(f1[ii], fT[ii], rtol=0.01, atol=0.01)
         np.testing.assert_allclose(p1[ii], pT[ii], rtol=0.01, atol=0.01)
-
-
-def test_pf2_r2x():
-    """Compare R2X values to tensorly implementation"""
-    w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
-
-    p, projected_X = project_data(X, cp.zeros((1, X[0].shape[1])), f)
-    errCMF = reconstruction_error(f, p, projected_X, norm_tensor)
-
-    f = [cp.asnumpy(ff) for ff in f]
-    p = [cp.asnumpy(pp) for pp in p]
-
-    err = _parafac2_reconstruction_error(X, (w, f, p)) ** 2
-
-    np.testing.assert_allclose(err, errCMF, rtol=1e-8)
 
 
 @pytest.mark.parametrize("sparse", [False, True])
