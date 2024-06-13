@@ -61,7 +61,7 @@ def project_data(
             mat = cp.array(mat)
 
         lhs = cp.array((A[i] * C) @ B.T, copy=False)
-        U, _, Vh = cp.linalg.svd(mat @ lhs - means @ lhs, full_matrices=False)
+        U, _, Vh = cp.linalg.svd((mat - means) @ lhs, full_matrices=False)
         proj = U @ Vh
 
         projections.append(cp.asnumpy(proj))
