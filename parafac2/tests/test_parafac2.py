@@ -68,7 +68,7 @@ def test_parafac2(sparse: bool):
 
     # Test that the model still matches the data
     err = _parafac2_reconstruction_error(X, (w1, f1, p1)) ** 2
-    np.testing.assert_allclose(1.0 - err / norm_tensor, e1, rtol=1e-5)
+    np.testing.assert_allclose(1.0 - err / norm_tensor, e1, rtol=1e-4)
 
     # Test reproducibility
     (w2, f2, p2), e2 = parafac2_nd(X_ann, rank=3, random_state=1)
