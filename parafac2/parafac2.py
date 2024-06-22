@@ -42,7 +42,7 @@ def parafac2_init(
     sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
     n_cond = np.amax(sgIndex) + 1
 
-    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state)  # type: ignore
+    _, _, C = randomized_svd(X_in.X[0:9000, :], rank, random_state=random_state)  # type: ignore
 
     factors = [np.ones((n_cond, rank)), np.eye(rank), C.T]
     return factors
@@ -51,7 +51,7 @@ def parafac2_init(
 def parafac2_nd(
     X_in: anndata.AnnData,
     rank: int,
-    n_iter_max: int = 200,
+    n_iter_max: int = 25,
     tol: float = 1e-6,
     random_state: Optional[int] = None,
     callback: Optional[Callable[[int, float, list, list], None]] = None,
@@ -85,9 +85,7 @@ def parafac2_nd(
         factors = factorOuts[np.argmin(SECSerror)].factors
 
         delta = errs[-2] - errs[-1]
-        tq.set_postfix(
-            error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, refresh=False
-        )
+        tq.set_postfix(error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, refresh=False)
         if callback is not None:
             callback(iteration, errs[-1], factors, projections)
 
