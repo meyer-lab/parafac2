@@ -3,7 +3,7 @@ from typing import Optional, Callable
 import anndata
 import numpy as np
 from tqdm import tqdm
-from analyticpf2.SECSI import SECSI
+from .SECSI import SECSI
 from sklearn.utils.extmath import randomized_svd
 from .utils import (
     reconstruction_error,
@@ -54,6 +54,7 @@ def parafac2_nd(
     n_iter_max: int = 25,
     tol: float = 1e-6,
     random_state: Optional[int] = None,
+    SECSI_solver=False,
     callback: Optional[Callable[[int, float, list, list], None]] = None,
 ) -> tuple[tuple, float]:
     r"""The same interface as regular PARAFAC2."""

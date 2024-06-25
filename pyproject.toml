@@ -20,7 +20,6 @@ cupy-cuda12x = "^13.0"
 anndata = "^0.10"
 scikit-learn = "^1.4.2"
 pacmap = "^0.7.2"
-analyticpf2 = { git = "https://github.com/meyer-lab/analytic-Pf2.git", rev = "cde413f6c19fbbb29efd8a9e8d389b5dbbaff663" }
 
 
 [tool.poetry.group.dev.dependencies]
