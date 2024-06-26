@@ -42,4 +42,4 @@ def SECSItest(dim, true_rank, est_rank, noise=0.0, verbose=True):
 
 
 def test_SECSI():
-    best_error = SECSItest((120, 90, 80), 12, 12, noise=0.0)
+    SECSItest((120, 90, 80), 12, 12, noise=0.0)
