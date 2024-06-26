@@ -46,7 +46,7 @@ def parafac2_init(
     sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
     n_cond = np.amax(sgIndex) + 1
 
-    _, _, C = randomized_svd(X_in.X[0:9000, :], rank, random_state=random_state)  # type: ignore
+    _, _, C = randomized_svd(X_in.X[0:12_000, :], rank, random_state=random_state)  # type: ignore
 
     factors = [np.ones((n_cond, rank)), np.eye(rank), C.T]
     return factors
@@ -86,6 +86,10 @@ def parafac2_nd(
     err = reconstruction_error(factors, projections, projected_X, norm_tensor)
     errs = [err]
 
+    if SECSI_solver:
+        SECSerror, factorOuts = SECSI(projected_X, rank, verbose=False)
+        factors = factorOuts[np.argmin(SECSerror)].factors
+
     print("")
     tq = tqdm(range(n_iter_max), disable=(not verbose))
     for iteration in tq:
@@ -118,14 +122,8 @@ def parafac2_nd(
 
         errs.append(err / norm_tensor)
 
-        factors_old = deepcopy(factors)
-
-        if SECSI_solver:
-            SECSerror, factorOuts = SECSI(projected_X, rank, verbose=False)
-            factors = factorOuts[np.argmin(SECSerror)].factors
-
         tl.set_backend("cupy")
-
+        factors_old = deepcopy(factors)
         _, factors = parafac(
             cp.array(projected_X),  # type: ignore
             rank,
