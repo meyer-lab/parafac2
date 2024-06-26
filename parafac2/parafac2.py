@@ -6,6 +6,7 @@ import numpy as np
 import cupy as cp
 from tqdm import tqdm
 import tensorly as tl
+from .SECSI import SECSI
 from tensorly.decomposition import parafac
 from sklearn.utils.extmath import randomized_svd
 from .utils import (
@@ -57,6 +58,7 @@ def parafac2_nd(
     n_iter_max: int = 200,
     tol: float = 1e-6,
     random_state: Optional[int] = None,
+    SECSI_solver=False,
     callback: Optional[Callable[[int, float, list, list], None]] = None,
 ) -> tuple[tuple, float]:
     r"""The same interface as regular PARAFAC2."""
@@ -84,6 +86,11 @@ def parafac2_nd(
     err = reconstruction_error(factors, projections, projected_X, norm_tensor)
     errs = [err]
 
+    if SECSI_solver:
+        SECSerror, factorOuts = SECSI(projected_X, rank, verbose=False)
+        factors = factorOuts[np.argmin(SECSerror)].factors
+
+    print("")
     tq = tqdm(range(n_iter_max), disable=(not verbose))
     for iteration in tq:
         jump = beta_i + 1.0
