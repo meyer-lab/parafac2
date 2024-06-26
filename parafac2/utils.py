@@ -22,31 +22,6 @@ def anndata_to_list(X_in: anndata.AnnData) -> list[np.ndarray | sps.csr_array]:
     return X_list
 
 
-def calc_total_norm(X: anndata.AnnData) -> float:
-    """Calculate the total norm of the dataset, with centering.
-    This provides a much more performant way to calculate the norm given sparsity."""
-    if isinstance(X.X, np.ndarray):
-        return float(np.linalg.norm(X.X) ** 2.0)
-
-    Xarr = sps.csr_array(X.X)
-    means = X.var["means"].to_numpy()
-
-    # Deal with non-zero values first, by centering
-    centered_nonzero = Xarr.data - means[Xarr.indices]
-    centered_nonzero_norm = float(np.linalg.norm(centered_nonzero) ** 2.0)
-
-    # Obtain non-zero counts for each column
-    # Note that these are sorted, and no column should be empty
-    unique, counts = np.unique(Xarr.indices, return_counts=True)
-    assert np.all(np.diff(unique) == 1)
-
-    num_zero = Xarr.shape[0] - counts
-    assert num_zero.shape == means.shape
-    zero_norm = np.sum(np.square(means) * num_zero)
-
-    return zero_norm + centered_nonzero_norm
-
-
 def project_data(
     X_list: list, means: np.ndarray, factors: list[np.ndarray]
 ) -> tuple[list[np.ndarray], np.ndarray]:
