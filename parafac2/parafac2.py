@@ -1,9 +1,13 @@
 import os
 from typing import Optional, Callable
+from copy import deepcopy
 import anndata
 import numpy as np
+import cupy as cp
 from tqdm import tqdm
+import tensorly as tl
 from .SECSI import SECSI
+from tensorly.decomposition import parafac
 from sklearn.utils.extmath import randomized_svd
 from .utils import (
     reconstruction_error,
@@ -51,7 +55,7 @@ def parafac2_init(
 def parafac2_nd(
     X_in: anndata.AnnData,
     rank: int,
-    n_iter_max: int = 25,
+    n_iter_max: int = 200,
     tol: float = 1e-6,
     random_state: Optional[int] = None,
     SECSI_solver=False,
@@ -61,8 +65,15 @@ def parafac2_nd(
     # Verbose if this is not an automated build
     verbose = "CI" not in os.environ
 
+    gamma = 1.1
+    gamma_bar = 1.03
+    eta = 1.5
+    beta_i = 0.05
+    beta_i_bar = 1.0
+
     norm_tensor = calc_total_norm(X_in)
     factors = parafac2_init(X_in, rank, random_state)
+    factors_old = deepcopy(factors)
 
     X_list = anndata_to_list(X_in)
 
@@ -75,18 +86,59 @@ def parafac2_nd(
     err = reconstruction_error(factors, projections, projected_X, norm_tensor)
     errs = [err]
 
+    print("")
     tq = tqdm(range(n_iter_max), disable=(not verbose))
     for iteration in tq:
-        projections, projected_X = project_data(X_list, means, factors)
-        err = reconstruction_error(factors, projections, projected_X, norm_tensor)
+        jump = beta_i + 1.0
+
+        # Estimate error with line search
+        factors_ls = [
+            factors_old[ii] + (factors[ii] - factors_old[ii]) * jump for ii in range(3)
+        ]
+
+        projections_ls, projected_X_ls = project_data(X_list, means, factors)
+        err_ls = reconstruction_error(
+            factors_ls, projections_ls, projected_X_ls, norm_tensor
+        )
+
+        if err_ls < errs[-1] * norm_tensor:
+            err = err_ls
+            projections = projections_ls
+            projected_X = projected_X_ls
+            factors = factors_ls
+
+            beta_i = min(beta_i_bar, gamma * beta_i)
+            beta_i_bar = max(1.0, gamma_bar * beta_i_bar)
+        else:
+            beta_i_bar = beta_i
+            beta_i = beta_i / eta
+
+            projections, projected_X = project_data(X_list, means, factors)
+            err = reconstruction_error(factors, projections, projected_X, norm_tensor)
 
         errs.append(err / norm_tensor)
 
-        SECSerror, factorOuts = SECSI(projected_X, rank, verbose=False)
-        factors = factorOuts[np.argmin(SECSerror)].factors
+        if SECSI_solver:
+            SECSerror, factorOuts = SECSI(projected_X, rank, verbose=False)
+            factors = factorOuts[np.argmin(SECSerror)].factors
+
+        tl.set_backend("cupy")
+        factors_old = deepcopy(factors)
+        _, factors = parafac(
+            cp.array(projected_X),  # type: ignore
+            rank,
+            n_iter_max=20,
+            init=(None, [cp.array(f) for f in factors]),  # type: ignore
+            tol=None,  # type: ignore
+            normalize_factors=False,
+        )
+        tl.set_backend("numpy")
+        factors = [cp.asnumpy(f) for f in factors]
 
         delta = errs[-2] - errs[-1]
-        tq.set_postfix(error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, refresh=False)
+        tq.set_postfix(
+            error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, jump=jump, refresh=False
+        )
         if callback is not None:
             callback(iteration, errs[-1], factors, projections)
 

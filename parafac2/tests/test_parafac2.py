@@ -59,19 +59,20 @@ def test_init_reprod(sparse: bool):
         cp.testing.assert_array_equal(proj1[ii], proj2[ii])
 
 
+@pytest.mark.parametrize("SECSI_solver", [False, True])
 @pytest.mark.parametrize("sparse", [False, True])
-def test_parafac2(sparse: bool):
+def test_parafac2(sparse: bool, SECSI_solver: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
     X_ann = pf2_to_anndata(X, sparse=sparse)
 
-    (w1, f1, p1), e1 = parafac2_nd(X_ann, rank=3, random_state=1)
+    (w1, f1, p1), e1 = parafac2_nd(X_ann, rank=3, random_state=1, SECSI_solver=SECSI_solver)
 
     # Test that the model still matches the data
     err = _parafac2_reconstruction_error(X, (w1, f1, p1)) ** 2
     np.testing.assert_allclose(1.0 - err / norm_tensor, e1, rtol=1e-4)
 
     # Test reproducibility
-    (w2, f2, p2), e2 = parafac2_nd(X_ann, rank=3, random_state=1)
+    (w2, f2, p2), e2 = parafac2_nd(X_ann, rank=3, random_state=1, SECSI_solver=SECSI_solver)
     # Compare to TensorLy
     wT, fT, pT = parafac2(
         X,
@@ -115,12 +116,13 @@ def test_pf2_r2x():
     np.testing.assert_allclose(err, errCMF, rtol=1e-8)
 
 
+@pytest.mark.parametrize("SECSI_solver", [False, True])
 @pytest.mark.parametrize("sparse", [False, True])
-def test_performance(sparse: bool):
+def test_performance(sparse: bool, SECSI_solver: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
     # 5000 by 2000 by 300 is roughly the lupus data
     pf2shape = [(5_00, 2_00)] * 60
-    X = random_parafac2(pf2shape, rank=12, full=True, random_state=2)
+    X = random_parafac2(pf2shape, rank=12, full=True, random_state=2, SECSI_solver=SECSI_solver)
 
     X = pf2_to_anndata(X, sparse=sparse)
 
