@@ -6,13 +6,13 @@ import numpy as np
 import cupy as cp
 from tqdm import tqdm
 import tensorly as tl
+from scipy.sparse.linalg import norm
 from .SECSI import SECSI
 from tensorly.decomposition import parafac
 from sklearn.utils.extmath import randomized_svd
 from .utils import (
     reconstruction_error,
     standardize_pf2,
-    calc_total_norm,
     project_data,
     anndata_to_list,
 )
@@ -41,21 +41,27 @@ def parafac2_init(
     X_in: anndata.AnnData,
     rank: int,
     random_state: Optional[int] = None,
-) -> list[np.ndarray]:
+) -> tuple[list[np.ndarray], float]:
     # Index dataset to a list of conditions
-    sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
-    n_cond = np.amax(sgIndex) + 1
+    n_cond = len(X_in.obs["condition_unique_idxs"].cat.categories)
+    means = X_in.var["means"].to_numpy()
+
+    lmult = X_in.X @ means
+    if isinstance(X_in.X, np.ndarray):
+        norm_tensor = float(np.linalg.norm(X_in.X) ** 2.0 - 2 * np.sum(lmult))
+    else:
+        norm_tensor = float(norm(X_in.X) ** 2.0 - 2 * np.sum(lmult))
 
     _, _, C = randomized_svd(X_in.X, rank, random_state=random_state)  # type: ignore
 
     factors = [np.ones((n_cond, rank)), np.eye(rank), C.T]
-    return factors
+    return factors, norm_tensor
 
 
 def parafac2_nd(
     X_in: anndata.AnnData,
     rank: int,
-    n_iter_max: int = 200,
+    n_iter_max: int = 100,
     tol: float = 1e-6,
     random_state: Optional[int] = None,
     SECSI_solver=False,
@@ -71,8 +77,7 @@ def parafac2_nd(
     beta_i = 0.05
     beta_i_bar = 1.0
 
-    norm_tensor = calc_total_norm(X_in)
-    factors = parafac2_init(X_in, rank, random_state)
+    factors, norm_tensor = parafac2_init(X_in, rank, random_state)
     factors_old = deepcopy(factors)
 
     X_list = anndata_to_list(X_in)

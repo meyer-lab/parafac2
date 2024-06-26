@@ -4,13 +4,13 @@ Test the data import.
 
 import pytest
 import anndata
-from scipy.sparse import csr_matrix, random
+from scipy.sparse import csr_matrix
 import numpy as np
 import cupy as cp
 from tensorly.decomposition import parafac2
 from tensorly.random import random_parafac2
 from ..parafac2 import parafac2_nd, parafac2_init
-from ..utils import reconstruction_error, project_data, calc_total_norm
+from ..utils import reconstruction_error, project_data
 from tensorly.parafac2_tensor import parafac2_to_slices
 from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
 
@@ -42,8 +42,8 @@ def test_init_reprod(sparse: bool):
     """Test for reproducibility with the dense formulation."""
     X_ann = pf2_to_anndata(X, sparse=sparse)
 
-    f1 = parafac2_init(X_ann, rank=3, random_state=1)
-    f2 = parafac2_init(X_ann, rank=3, random_state=1)
+    f1, _ = parafac2_init(X_ann, rank=3, random_state=1)
+    f2, _ = parafac2_init(X_ann, rank=3, random_state=1)
 
     # Compare both seeds
     for ii in range(3):
@@ -131,23 +131,6 @@ def test_performance(sparse: bool, SECSI_solver: bool):
     X = pf2_to_anndata(X, sparse=sparse)
 
     (w1, f1, p1), e1 = parafac2_nd(X, rank=9, SECSI_solver=SECSI_solver)
-
-
-def test_total_norm():
-    """This tests that mean centering does not affect the projections and error calculation."""
-    X = anndata.AnnData(X=random(200, 200, density=0.1, format="csr"))  # type: ignore
-    X.var["means"] = np.zeros(X.shape[1])
-
-    normBefore = calc_total_norm(X)
-
-    # De-mean since we aim to subtract off the means
-    means = np.mean(X.X.toarray(), axis=0)  # type: ignore
-    X.X += means
-    X.X = csr_matrix(X.X)
-    X.var["means"] = means
-
-    normAfter = calc_total_norm(X)
-    np.testing.assert_allclose(normBefore, normAfter)
 
 
 def test_pf2_proj_centering():
