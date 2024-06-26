@@ -12,6 +12,7 @@ from tensorly.random import random_parafac2
 from ..parafac2 import parafac2_nd, parafac2_init
 from ..utils import project_data, calc_total_norm
 from tensorly.parafac2_tensor import parafac2_to_slices
+from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
 
 
 pf2shape = [(500, 2000)] * 8
@@ -140,22 +141,30 @@ def test_pf2_proj_centering():
     )
 
     X_pf = parafac2_to_slices((None, factors, projections))
+    factors[0][0, 0] = -0.123  # Provide some error so we don't end up with nan
 
-    norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))  # type: ignore
+    norm_X_sq = sum([np.linalg.norm(xx) ** 2.0 for xx in X_pf])
+    norm_tensor_sqrt = np.sqrt(norm_X_sq)
 
     projections, projected_X = project_data(X_pf, cp.zeros((1, 300)), factors)
-    norm_sq_err = reconstruction_error(factors, projections, projected_X, norm_X_sq)
-
-    np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
+    norm_sq_err = (
+            _parafac2_reconstruction_error(
+                X_pf, (None, factors, projections), norm_tensor_sqrt, projected_X
+            )
+            ** 2.0
+        )
 
     # De-mean since we aim to subtract off the means
     means = np.random.randn(X_pf[0].shape[1])
     X_pf = [xx + means for xx in X_pf]
 
     projections, projected_X_mean = project_data(X_pf, cp.array(means), factors)
-    norm_sq_err_centered = reconstruction_error(
-        factors, projections, projected_X, norm_X_sq
-    )
+    norm_sq_err_centered = (
+            _parafac2_reconstruction_error(
+                X_pf, (None, factors, projections), norm_tensor_sqrt, projected_X
+            )
+            ** 2.0
+        )
 
     cp.testing.assert_allclose(projected_X, projected_X_mean)
     np.testing.assert_allclose(
