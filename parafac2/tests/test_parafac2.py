@@ -148,11 +148,11 @@ def test_pf2_proj_centering():
 
     projections, projected_X = project_data(X_pf, cp.zeros((1, 300)), factors)
     norm_sq_err = (
-            _parafac2_reconstruction_error(
-                X_pf, (None, factors, projections), norm_tensor_sqrt, projected_X
-            )
-            ** 2.0
+        _parafac2_reconstruction_error(
+            X_pf, (None, factors, projections), norm_tensor_sqrt, projected_X
         )
+        ** 2.0
+    )
 
     # De-mean since we aim to subtract off the means
     means = np.random.randn(X_pf[0].shape[1])
@@ -160,11 +160,11 @@ def test_pf2_proj_centering():
 
     projections, projected_X_mean = project_data(X_pf, cp.array(means), factors)
     norm_sq_err_centered = (
-            _parafac2_reconstruction_error(
-                X_pf, (None, factors, projections), norm_tensor_sqrt, projected_X
-            )
-            ** 2.0
+        _parafac2_reconstruction_error(
+            X_pf, (None, factors, projections), norm_tensor_sqrt, projected_X
         )
+        ** 2.0
+    )
 
     cp.testing.assert_allclose(projected_X, projected_X_mean)
     np.testing.assert_allclose(

@@ -109,7 +109,10 @@ def parafac2_nd(
         projections_ls, projected_X_ls = project_data(X_list, means, factors)
         err_ls = (
             _parafac2_reconstruction_error(
-                X_list, (None, factors_ls, projections_ls), norm_tensor_sqrt, projected_X_ls
+                X_list,
+                (None, factors_ls, projections_ls),
+                norm_tensor_sqrt,
+                projected_X_ls,
             )
             ** 2.0
         )
