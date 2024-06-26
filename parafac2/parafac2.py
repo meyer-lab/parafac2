@@ -1,11 +1,12 @@
 import os
-from typing import Optional
+from typing import Optional, Callable
 from copy import deepcopy
 import anndata
 import numpy as np
 import cupy as cp
 from tqdm import tqdm
 import tensorly as tl
+from .SECSI import SECSI
 from tensorly.decomposition import parafac
 from sklearn.utils.extmath import randomized_svd
 from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
@@ -57,6 +58,8 @@ def parafac2_nd(
     n_iter_max: int = 200,
     tol: float = 1e-6,
     random_state: Optional[int] = None,
+    SECSI_solver=False,
+    callback: Optional[Callable[[int, float, list, list], None]] = None,
 ) -> tuple[tuple, float]:
     r"""The same interface as regular PARAFAC2."""
     # Verbose if this is not an automated build
@@ -89,8 +92,13 @@ def parafac2_nd(
     )
     errs = [err]
 
+    if SECSI_solver:
+        SECSerror, factorOuts = SECSI(projected_X, rank, verbose=False)
+        factors = factorOuts[np.argmin(SECSerror)].factors
+
+    print("")
     tq = tqdm(range(n_iter_max), disable=(not verbose))
-    for _ in tq:
+    for iteration in tq:
         jump = beta_i + 1.0
 
         # Estimate error with line search
@@ -145,6 +153,8 @@ def parafac2_nd(
         tq.set_postfix(
             error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, jump=jump, refresh=False
         )
+        if callback is not None:
+            callback(iteration, errs[-1], factors, projections)
 
         if delta < tol:
             break
