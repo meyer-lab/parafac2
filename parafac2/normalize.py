@@ -19,9 +19,7 @@ def normalize_total(adata: anndata.AnnData):
 
     inplace_row_scale(adata.X, 1.0 / np.clip(counts_per_cell, 1e-12, None))  # type: ignore
 
-from line_profiler import profile
 
-@profile
 def prepare_dataset(
     X: anndata.AnnData, condition_name: str, geneThreshold: float
 ) -> anndata.AnnData:

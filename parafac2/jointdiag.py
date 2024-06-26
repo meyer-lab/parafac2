@@ -23,7 +23,10 @@ def jointdiag(
 
     # Initial error calculation
     # Transpose is because np.tril operates on the last two dimensions
-    e = np.linalg.norm(X) ** 2.0 - np.linalg.norm(np.diagonal(X, axis1=1, axis2=2)) ** 2.0
+    e = (
+        np.linalg.norm(X) ** 2.0
+        - np.linalg.norm(np.diagonal(X, axis1=1, axis2=2)) ** 2.0
+    )
 
     if verbose:
         print(f"Sweep # 0: e = {e:.3e}")
@@ -111,7 +114,10 @@ def jointdiag(
 
         # Error computation, check if loop needed...
         old_e = e
-        e = np.linalg.norm(X) ** 2.0 - np.linalg.norm(np.diagonal(X, axis1=1, axis2=2)) ** 2.0
+        e = (
+            np.linalg.norm(X) ** 2.0
+            - np.linalg.norm(np.diagonal(X, axis1=1, axis2=2)) ** 2.0
+        )
 
         if verbose:
             print(f"Sweep # {k + 1}: e = {e:.3e}")

@@ -125,7 +125,7 @@ def parafac2_nd(
             factors = factorOuts[np.argmin(SECSerror)].factors
 
         tl.set_backend("cupy")
-        
+
         _, factors = parafac(
             cp.array(projected_X),  # type: ignore
             rank,

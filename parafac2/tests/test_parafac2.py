@@ -65,14 +65,18 @@ def test_parafac2(sparse: bool, SECSI_solver: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
     X_ann = pf2_to_anndata(X, sparse=sparse)
 
-    (w1, f1, p1), e1 = parafac2_nd(X_ann, rank=3, random_state=1, SECSI_solver=SECSI_solver)
+    (w1, f1, p1), e1 = parafac2_nd(
+        X_ann, rank=3, random_state=1, SECSI_solver=SECSI_solver
+    )
 
     # Test that the model still matches the data
     err = _parafac2_reconstruction_error(X, (w1, f1, p1)) ** 2
     np.testing.assert_allclose(1.0 - err / norm_tensor, e1, rtol=1e-5)
 
     # Test reproducibility
-    (w2, f2, p2), e2 = parafac2_nd(X_ann, rank=3, random_state=1, SECSI_solver=SECSI_solver)
+    (w2, f2, p2), e2 = parafac2_nd(
+        X_ann, rank=3, random_state=1, SECSI_solver=SECSI_solver
+    )
     # Compare to TensorLy
     wT, fT, pT = parafac2(
         X,
