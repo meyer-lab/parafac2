@@ -118,12 +118,14 @@ def parafac2_nd(
 
         errs.append(err / norm_tensor)
 
+        factors_old = deepcopy(factors)
+
         if SECSI_solver:
             SECSerror, factorOuts = SECSI(projected_X, rank, verbose=False)
             factors = factorOuts[np.argmin(SECSerror)].factors
 
         tl.set_backend("cupy")
-        factors_old = deepcopy(factors)
+        
         _, factors = parafac(
             cp.array(projected_X),  # type: ignore
             rank,
