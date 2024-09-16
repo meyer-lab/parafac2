@@ -5,9 +5,9 @@ test: .venv
 .venv: pyproject.toml
 	rye sync
 
-# testprofile:
-# 	poetry run python3 -m cProfile -o profile -m pytest -s -x -v
-# 	gprof2dot -f pstats --node-thres=1.0 profile | dot -Tsvg -o profile.svg
+testprofile:
+	rye run python3 -m cProfile -o profile -m pytest -s -x -v
+	rye run gprof2dot -f pstats --node-thres=1.0 profile | dot -Tsvg -o profile.svg
 
 coverage.xml: .venv
 	rye run pytest --junitxml=junit.xml --cov=parafac2 --cov-report xml:coverage.xml

@@ -15,7 +15,7 @@ dependencies = [
     "anndata>=0.10",
     "scikit-learn>=1.4.2",
     "pacmap>=0.7.2",
-    "tlviz>=0.1.1"
+    "tlviz>=0.1.1",
 ]
 
 [tool.rye]
@@ -24,6 +24,7 @@ dev-dependencies = [
     "ruff>=0.4.1",
     "pytest>=8.2.0",
     "pyright>=1.1.380",
+    "gprof2dot>=2024.6.6",
 ]
 
 [build-system]

@@ -30,6 +30,7 @@ fastrlock==0.8.2
     # via cupy-cuda12x
 fonttools==4.53.1
     # via matplotlib
+gprof2dot==2024.6.6
 h5py==3.11.0
     # via anndata
 idna==3.10
