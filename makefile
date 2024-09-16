@@ -1,16 +1,19 @@
 
-test:
-	poetry run pytest -s -x -v
+test: .venv
+	rye run pytest -s -v -x
 
-testprofile:
-	poetry run python3 -m cProfile -o profile -m pytest -s -x -v
-	gprof2dot -f pstats --node-thres=1.0 profile | dot -Tsvg -o profile.svg
+.venv: pyproject.toml
+	rye sync
 
-coverage.xml:
-	poetry run pytest --cov=parafac2 --cov-report=xml
+# testprofile:
+# 	poetry run python3 -m cProfile -o profile -m pytest -s -x -v
+# 	gprof2dot -f pstats --node-thres=1.0 profile | dot -Tsvg -o profile.svg
+
+coverage.xml: .venv
+	rye run pytest --junitxml=junit.xml --cov=sccp --cov-report xml:coverage.xml
 
 clean:
-	rm profile.svg profile
+	rm -rf output profile profile.svg
 
-mypy:
-	poetry run mypy --install-types --non-interactive --ignore-missing-imports --check-untyped-defs .
+pyright: .venv
+	rye run pyright sccp
