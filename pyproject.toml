@@ -23,6 +23,7 @@ managed = true
 dev-dependencies = [
     "ruff>=0.4.1",
     "pytest>=8.2.0",
+    "pytest-cov>=5.0",
     "pyright>=1.1.380",
     "gprof2dot>=2024.6.6",
 ]
