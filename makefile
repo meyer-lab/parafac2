@@ -1,3 +1,4 @@
+.PHONY: clean test pyright
 
 test: .venv
 	rye run pytest -s -v -x
@@ -12,8 +13,9 @@ testprofile:
 coverage.xml: .venv
 	rye run pytest --junitxml=junit.xml --cov=parafac2 --cov-report xml:coverage.xml
 
+pyright: .venv
+	rye run pyright parafac2
+	
 clean:
 	rm -rf output profile profile.svg
 
-pyright: .venv
-	rye run pyright parafac2
