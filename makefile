@@ -1,16 +1,21 @@
+.PHONY: clean test pyright
 
-test:
-	poetry run pytest -s -x -v
+test: .venv
+	rye run pytest -s -v -x
+
+.venv: pyproject.toml
+	rye sync
 
 testprofile:
-	poetry run python3 -m cProfile -o profile -m pytest -s -x -v
-	gprof2dot -f pstats --node-thres=1.0 profile | dot -Tsvg -o profile.svg
+	rye run python3 -m cProfile -o profile -m pytest -s -x -v
+	rye run gprof2dot -f pstats --node-thres=1.0 profile | dot -Tsvg -o profile.svg
 
-coverage.xml:
-	poetry run pytest --cov=parafac2 --cov-report=xml
+coverage.xml: .venv
+	rye run pytest --junitxml=junit.xml --cov=parafac2 --cov-report xml:coverage.xml
 
+pyright: .venv
+	rye run pyright parafac2
+	
 clean:
-	rm profile.svg profile
+	rm -rf output profile profile.svg
 
-mypy:
-	poetry run mypy --install-types --non-interactive --ignore-missing-imports --check-untyped-defs .
