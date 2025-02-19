@@ -8,7 +8,7 @@ from tqdm import tqdm
 import tensorly as tl
 from scipy.sparse.linalg import norm
 from .SECSI import SECSI
-from tensorly.decomposition import parafac
+from tensorly.decomposition import parafac, constrained_parafac
 from sklearn.utils.extmath import randomized_svd
 from .utils import (
     reconstruction_error,
@@ -63,6 +63,7 @@ def parafac2_nd(
     rank: int,
     n_iter_max: int = 100,
     tol: float = 1e-6,
+    l1=0.0,
     random_state: Optional[int] = None,
     SECSI_solver=False,
     callback: Optional[Callable[[int, float, list, list], None]] = None,
@@ -129,14 +130,27 @@ def parafac2_nd(
 
         tl.set_backend("cupy")
         factors_old = deepcopy(factors)
-        _, factors = parafac(
-            cp.array(projected_X),  # type: ignore
-            rank,
-            n_iter_max=20,
-            init=(None, [cp.array(f) for f in factors]),  # type: ignore
-            tol=None,  # type: ignore
-            normalize_factors=False,
-        )
+        cp_init = (None, [cp.array(f) for f in factors])
+
+        if l1 > 0.0:
+            _, factors = constrained_parafac(
+                cp.array(projected_X),
+                rank,
+                n_iter_max=40,
+                init=cp_init,  # type: ignore
+                l1_reg={2: l1},
+                non_negative={0: True},
+                tol_outer=None,  # type: ignore
+            )
+        else:
+            _, factors = parafac(
+                cp.array(projected_X),  # type: ignore
+                rank,
+                n_iter_max=20,
+                init=cp_init,  # type: ignore
+                tol=None,  # type: ignore
+                normalize_factors=False,
+            )
         tl.set_backend("numpy")
         factors = [cp.asnumpy(f) for f in factors]
 
