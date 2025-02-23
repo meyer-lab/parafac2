@@ -159,5 +159,7 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-poetry.lock
 .DS_Store
+requirements.lock
+requirements-dev.lock
+.python-version

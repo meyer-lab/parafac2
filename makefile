@@ -1,7 +1,7 @@
 .PHONY: clean test pyright
 
 test: .venv
-	rye run pytest -s -v -x
+	rye run pytest -s -v -x --durations=0
 
 .venv: pyproject.toml
 	rye sync
