@@ -8,6 +8,12 @@ on: push
 jobs:
   build:
     runs-on: self-hosted
+    strategy:
+      matrix:
+        python-version:
+          - 3.10.14
+          - 3.11
+          - 3.12
     steps:
     - uses: actions/checkout@v4
     - name: Setup rye
@@ -15,6 +21,8 @@ jobs:
       with:
         enable-cache: true
         version: '0.39.0'
+    - name: Pin Python version
+      run: rye pin ${{ matrix.python-version }}
     - name: Setup environment
       run: make .venv
     - name: Test with pytest
