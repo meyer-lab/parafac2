@@ -1,7 +1,7 @@
 import numpy as np
 import tensorly as tl
 from tensorly.random import random_cp
-from tlviz.factor_tools import factor_match_score
+from tensorly.metrics.similarity import correlation_index as corridx
 from ..SECSI import SECSI
 
 
@@ -21,7 +21,7 @@ def SECSItest(dim, true_rank, est_rank, noise=0.0, verbose=True):
     random_state, for consistency.
 
     """
-    tensor_fac = random_cp(dim, true_rank, full=False)
+    tensor_fac: tl.cp_tensor.CPTensor = random_cp(dim, true_rank, full=False)  # type: ignore
     tensor = tl.cp_to_tensor(tensor_fac)
 
     # Adds noise
@@ -30,7 +30,10 @@ def SECSItest(dim, true_rank, est_rank, noise=0.0, verbose=True):
     norm_est, cp_estimates = SECSI(tensor, est_rank, 50, verbose=False)
 
     for cp_est in cp_estimates:
-        assert factor_match_score(tensor_fac, cp_est) > 0.95
+        assert (
+            float(corridx(tensor_fac.factors, cp_est.factors, method="min_score"))
+            < 0.01
+        )
 
     if verbose:
         for i, resid in enumerate(norm_est):
@@ -42,4 +45,4 @@ def SECSItest(dim, true_rank, est_rank, noise=0.0, verbose=True):
 
 
 def test_SECSI():
-    SECSItest((120, 90, 80), 12, 12, noise=0.0)
+    SECSItest((60, 50, 40), 10, 10, noise=0.0)

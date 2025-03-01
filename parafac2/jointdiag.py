@@ -7,7 +7,7 @@ def jointdiag(
     MaxIter: int = 50,
     threshold: float = 1e-10,
     verbose=False,
-):
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Jointly diagonalizes n matrices, organized in tensor of dimension (k,k,n).
     Returns Diagonalized matrices.
@@ -93,8 +93,7 @@ def jointdiag(
             elif angle_selection < 0.0:
                 theta_k = (th1 + np.pi) / 4
             else:
-                print("No solution found -- Jointdiag")
-                return Esum, Dsum, qt
+                raise RuntimeError("No solution found -- Jointdiag")
 
             # Given's rotation, this will minimize norm of off-diagonal elements only
             pvec = X[p, :, :].copy()
