@@ -3,9 +3,7 @@ from typing import Optional, Callable
 from copy import deepcopy
 import anndata
 import numpy as np
-import cupy as cp
 from tqdm import tqdm
-import tensorly as tl
 from scipy.sparse.linalg import norm
 from .SECSI import SECSI
 from tensorly.decomposition import parafac, constrained_parafac
@@ -128,13 +126,12 @@ def parafac2_nd(
 
         errs.append(err / norm_tensor)
 
-        tl.set_backend("cupy")
         factors_old = deepcopy(factors)
-        cp_init = (None, [cp.array(f) for f in factors])
+        cp_init = (None, factors)
 
         if l1 > 0.0:
             _, factors = constrained_parafac(
-                cp.array(projected_X),
+                projected_X,
                 rank,
                 n_iter_max=40,
                 init=cp_init,  # type: ignore
@@ -144,15 +141,13 @@ def parafac2_nd(
             )
         else:
             _, factors = parafac(
-                cp.array(projected_X),  # type: ignore
+                projected_X,
                 rank,
                 n_iter_max=20,
                 init=cp_init,  # type: ignore
                 tol=None,  # type: ignore
                 normalize_factors=False,
             )
-        tl.set_backend("numpy")
-        factors = [cp.asnumpy(f) for f in factors]
 
         delta = errs[-2] - errs[-1]
         tq.set_postfix(
