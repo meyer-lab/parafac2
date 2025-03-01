@@ -1,7 +1,7 @@
 import numpy as np
 import tensorly as tl
 from tensorly.random import random_cp
-from tensorly.metrics.similarity import correlation_index
+from tensorly.metrics.similarity import correlation_index as corridx
 from ..SECSI import SECSI
 
 
@@ -30,7 +30,10 @@ def SECSItest(dim, true_rank, est_rank, noise=0.0, verbose=True):
     norm_est, cp_estimates = SECSI(tensor, est_rank, 50, verbose=False)
 
     for cp_est in cp_estimates:
-        assert float(correlation_index(tensor_fac.factors, cp_est.factors, method="min_score")) < 0.01
+        assert (
+            float(corridx(tensor_fac.factors, cp_est.factors, method="min_score"))
+            < 0.01
+        )
 
     if verbose:
         for i, resid in enumerate(norm_est):
