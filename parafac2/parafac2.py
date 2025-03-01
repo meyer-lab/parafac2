@@ -5,8 +5,9 @@ import anndata
 import numpy as np
 from tqdm import tqdm
 from scipy.sparse.linalg import norm
-from .SECSI import SECSI
-from tensorly.decomposition import parafac, constrained_parafac
+from tensorly.solvers.admm import admm
+from tensorly.tenalg import unfolding_dot_khatri_rao
+from tensorly.cp_tensor import cp_normalize
 from sklearn.utils.extmath import randomized_svd
 from .utils import (
     reconstruction_error,
@@ -56,14 +57,56 @@ def parafac2_init(
     return factors, norm_tensor
 
 
+def constrained_parafac_simple(
+    tensor,
+    rank,
+    factors,
+    n_iter_max=40,
+    l1_reg=None,
+    normalize=None,
+    normalized_sparsity=None,
+):
+    # ADMM inits
+    dual_variables = [np.zeros_like(f) for f in factors]
+    factors_aux = [np.zeros_like(f.T) for f in factors]
+
+    for _ in range(n_iter_max):
+        for mode in range(3):
+            pseudo_inverse = np.ones((rank, rank))
+            for i, factor in enumerate(factors):
+                if i != mode:
+                    pseudo_inverse = pseudo_inverse * np.dot(factor.T, factor)
+
+            mttkrp = unfolding_dot_khatri_rao(tensor, (None, factors), mode)
+
+            factors[mode], factors_aux[mode], dual_variables[mode] = admm(
+                mttkrp,
+                pseudo_inverse,
+                factors[mode],
+                dual_variables[mode],
+                n_iter_max=20,
+                n_const=np.ndim(tensor),
+                order=mode,
+                non_negative={0: True},
+                l1_reg=l1_reg,
+                normalize=normalize,
+                normalized_sparsity=normalized_sparsity,
+                tol=1.0e-12,
+            )
+
+    weights, factors = cp_normalize((None, factors))
+    factors[0] = factors[0] * weights[None, :]
+
+    return factors
+
+
 def parafac2_nd(
     X_in: anndata.AnnData,
     rank: int,
     n_iter_max: int = 100,
-    tol: float = 1e-6,
+    tol: float = 1e-7,
     l1=0.0,
     random_state: Optional[int] = None,
-    SECSI_solver=False,
     callback: Optional[Callable[[int, float, list, list], None]] = None,
 ) -> tuple[tuple, float]:
     r"""The same interface as regular PARAFAC2."""
@@ -89,10 +132,6 @@ def parafac2_nd(
     projections, projected_X = project_data(X_list, means, factors)
     err = reconstruction_error(factors, projections, projected_X, norm_tensor)
     errs = [err]
-
-    if SECSI_solver:
-        SECSerror, factorOuts = SECSI(projected_X, rank, verbose=False)
-        factors = factorOuts[np.argmin(SECSerror)].factors
 
     print("")
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=1.0)
@@ -127,27 +166,12 @@ def parafac2_nd(
         errs.append(err / norm_tensor)
 
         factors_old = deepcopy(factors)
-        cp_init = (None, factors)
-
-        if l1 > 0.0:
-            _, factors = constrained_parafac(
-                projected_X,
-                rank,
-                n_iter_max=40,
-                init=cp_init,  # type: ignore
-                l1_reg={2: l1},
-                non_negative={0: True},
-                tol_outer=None,  # type: ignore
-            )
-        else:
-            _, factors = parafac(
-                projected_X,
-                rank,
-                n_iter_max=20,
-                init=cp_init,  # type: ignore
-                tol=None,  # type: ignore
-                normalize_factors=False,
-            )
+        factors = constrained_parafac_simple(
+            projected_X,
+            rank,
+            factors,
+            l1_reg={2: l1},
+        )
 
         delta = errs[-2] - errs[-1]
         tq.set_postfix(
