@@ -95,7 +95,7 @@ def parafac2_nd(
         factors = factorOuts[np.argmin(SECSerror)].factors
 
     print("")
-    tq = tqdm(range(n_iter_max), disable=(not verbose))
+    tq = tqdm(range(n_iter_max), disable=(not verbose), delay=1.0)
     for iteration in tq:
         jump = beta_i + 1.0
 

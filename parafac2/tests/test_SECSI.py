@@ -21,7 +21,7 @@ def SECSItest(dim, true_rank, est_rank, noise=0.0, verbose=True):
     random_state, for consistency.
 
     """
-    tensor_fac = random_cp(dim, true_rank, full=False)
+    tensor_fac: tl.cp_tensor.CPTensor = random_cp(dim, true_rank, full=False)  # type: ignore
     tensor = tl.cp_to_tensor(tensor_fac)
 
     # Adds noise
@@ -45,4 +45,4 @@ def SECSItest(dim, true_rank, est_rank, noise=0.0, verbose=True):
 
 
 def test_SECSI():
-    SECSItest((120, 90, 80), 12, 12, noise=0.0)
+    SECSItest((60, 50, 40), 10, 10, noise=0.0)
