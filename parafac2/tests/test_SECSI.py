@@ -5,7 +5,7 @@ from tensorly.metrics.similarity import correlation_index as corridx
 from ..SECSI import SECSI
 
 
-def SECSItest(dim, true_rank, est_rank, noise=0.0, verbose=True):
+def SECSItest(dim, true_rank, est_rank, noise=0.0, verbose=False):
     """
     Built to test SECSI.py function. Creates three random factor matrices based on given dimension, rank.
     Computes CP tensor based on these matrices.
