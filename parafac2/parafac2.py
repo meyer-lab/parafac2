@@ -5,8 +5,8 @@ import anndata
 import numpy as np
 from tqdm import tqdm
 from scipy.sparse.linalg import norm
-from .SECSI import SECSI
-from tensorly.decomposition import parafac, constrained_parafac
+from tensorly.tenalg import unfolding_dot_khatri_rao
+from tensorly.cp_tensor import cp_normalize
 from sklearn.utils.extmath import randomized_svd
 from .utils import (
     reconstruction_error,
@@ -14,6 +14,7 @@ from .utils import (
     project_data,
     anndata_to_list,
 )
+from line_profiler import LineProfiler
 
 
 def store_pf2(
@@ -56,14 +57,84 @@ def parafac2_init(
     return factors, norm_tensor
 
 
+
+def admm(
+    UtM,
+    UtU,
+    x,
+    dual_var,
+    order: int,
+    n_iter_max=5,
+    l1_reg=0.0,
+):
+    rho = np.trace(UtU) / np.shape(x)[1]
+
+    for _ in range(n_iter_max):
+        x_split = np.linalg.solve(
+            (UtU + rho * np.eye(np.shape(UtU)[1])).T,
+            (UtM + rho * (x + dual_var)).T,
+        )
+
+        x = x_split.T - dual_var
+
+        if order == 0:
+            x = np.clip(x, 0, np.max(x))
+        if order == 1:
+            return x, dual_var
+        if order == 2:
+            # soft thresholding
+            x = np.sign(x) * np.maximum(np.abs(x) - l1_reg, 0.0)
+
+        dual_var = dual_var + x - x_split.T
+
+    return x, dual_var
+
+
+lp = LineProfiler()
+admmx = lp(admm)
+
+
+def constrained_parafac_simple(
+    tensor,
+    rank,
+    factors,
+    n_iter_max=20,
+    l1_reg=0.0,
+):
+    # ADMM inits
+    dual_variables = [np.zeros_like(f) for f in factors]
+
+    for _ in range(n_iter_max):
+        for mode in range(3):
+            pseudo_inverse = np.ones((rank, rank))
+            for i, factor in enumerate(factors):
+                if i != mode:
+                    pseudo_inverse = pseudo_inverse * np.dot(factor.T, factor)
+
+            mttkrp = unfolding_dot_khatri_rao(tensor, (None, factors), mode)
+
+            factors[mode], dual_variables[mode] = admm(
+                mttkrp,
+                pseudo_inverse,
+                factors[mode],
+                dual_variables[mode],
+                order=mode,
+                l1_reg=l1_reg,
+            )
+
+    weights, factors = cp_normalize((None, factors))
+    factors[0] = factors[0] * weights[None, :]
+
+    return factors
+
+
 def parafac2_nd(
     X_in: anndata.AnnData,
     rank: int,
-    n_iter_max: int = 100,
-    tol: float = 1e-6,
+    n_iter_max: int = 1000,
+    tol: float = 1e-9,
     l1=0.0,
     random_state: Optional[int] = None,
-    SECSI_solver=False,
     callback: Optional[Callable[[int, float, list, list], None]] = None,
 ) -> tuple[tuple, float]:
     r"""The same interface as regular PARAFAC2."""
@@ -89,10 +160,6 @@ def parafac2_nd(
     projections, projected_X = project_data(X_list, means, factors)
     err = reconstruction_error(factors, projections, projected_X, norm_tensor)
     errs = [err]
-
-    if SECSI_solver:
-        SECSerror, factorOuts = SECSI(projected_X, rank, verbose=False)
-        factors = factorOuts[np.argmin(SECSerror)].factors
 
     print("")
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=1.0)
@@ -127,27 +194,12 @@ def parafac2_nd(
         errs.append(err / norm_tensor)
 
         factors_old = deepcopy(factors)
-        cp_init = (None, factors)
-
-        if l1 > 0.0:
-            _, factors = constrained_parafac(
-                projected_X,
-                rank,
-                n_iter_max=40,
-                init=cp_init,  # type: ignore
-                l1_reg={2: l1},
-                non_negative={0: True},
-                tol_outer=None,  # type: ignore
-            )
-        else:
-            _, factors = parafac(
-                projected_X,
-                rank,
-                n_iter_max=20,
-                init=cp_init,  # type: ignore
-                tol=None,  # type: ignore
-                normalize_factors=False,
-            )
+        factors = constrained_parafac_simple(
+            projected_X,
+            rank,
+            factors,
+            l1_reg=l1,
+        )
 
         delta = errs[-2] - errs[-1]
         tq.set_postfix(
