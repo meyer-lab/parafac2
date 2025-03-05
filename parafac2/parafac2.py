@@ -133,11 +133,10 @@ def parafac2_nd(
             _, factors = constrained_parafac(
                 projected_X,
                 rank,
-                n_iter_max=40,
+                n_iter_max=20,
                 init=cp_init,  # type: ignore
                 l1_reg={2: l1},
                 non_negative={0: True},
-                tol_outer=None,  # type: ignore
             )
         else:
             _, factors = parafac(
