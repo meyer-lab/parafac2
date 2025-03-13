@@ -6,6 +6,8 @@ import numpy as np
 from tqdm import tqdm
 from scipy.sparse.linalg import norm
 from .SECSI import SECSI
+import cupy as cp
+import tensorly as tl
 from tensorly.decomposition import parafac, constrained_parafac
 from sklearn.utils.extmath import randomized_svd
 from .utils import (
@@ -127,26 +129,32 @@ def parafac2_nd(
         errs.append(err / norm_tensor)
 
         factors_old = deepcopy(factors)
-        cp_init = (None, factors)
 
-        if l1 > 0.0:
-            _, factors = constrained_parafac(
-                projected_X,
-                rank,
-                n_iter_max=20,
-                init=cp_init,  # type: ignore
-                l1_reg={2: l1},
-                non_negative={0: True},
-            )
-        else:
-            _, factors = parafac(
-                projected_X,
-                rank,
-                n_iter_max=20,
-                init=cp_init,  # type: ignore
-                tol=None,  # type: ignore
-                normalize_factors=False,
-            )
+        with cp.cuda.Device(1):
+            tl.set_backend("cupy")
+            projected_X = cp.array(projected_X, dtype=cp.float64)
+            cp_init = (None, [cp.array(f, dtype=cp.float64) for f in factors])
+
+            if l1 > 0.0:
+                _, factors = constrained_parafac(
+                    projected_X,
+                    rank,
+                    n_iter_max=20,
+                    init=cp_init,  # type: ignore
+                    l1_reg={2: l1},
+                    non_negative={0: True},
+                )
+            else:
+                _, factors = parafac(
+                    projected_X,
+                    rank,
+                    n_iter_max=20,
+                    init=cp_init,  # type: ignore
+                    tol=None,  # type: ignore
+                    normalize_factors=False,
+                )
+            tl.set_backend("numpy")
+            factors = [cp.asnumpy(f) for f in factors]
 
         delta = errs[-2] - errs[-1]
         tq.set_postfix(
