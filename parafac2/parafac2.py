@@ -62,6 +62,7 @@ def parafac2_nd(
     n_iter_max: int = 100,
     tol: float = 1e-6,
     l1=0.0,
+    regularize_A=False,
     random_state: Optional[int] = None,
     SECSI_solver=False,
     callback: Optional[Callable[[int, float, list, list], None]] = None,
@@ -130,14 +131,23 @@ def parafac2_nd(
         cp_init = (None, factors)
 
         if l1 > 0.0:
-            _, factors = constrained_parafac(
-                projected_X,
-                rank,
-                n_iter_max=20,
-                init=cp_init,  # type: ignore
-                l1_reg={2: l1},
-                non_negative={0: True},
-            )
+            if regularize_A:
+                _, factors = constrained_parafac(
+                    projected_X,
+                    rank,
+                    n_iter_max=20,
+                    init=cp_init,  # type: ignore
+                    l1_reg={0: l1, 2: l1},
+                )
+            else:
+                _, factors = constrained_parafac(
+                    projected_X,
+                    rank,
+                    n_iter_max=20,
+                    init=cp_init,  # type: ignore
+                    l1_reg={2: l1},
+                    non_negative={0: True},
+                )
         else:
             _, factors = parafac(
                 projected_X,
