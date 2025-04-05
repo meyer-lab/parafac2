@@ -135,7 +135,7 @@ def parafac2_nd(
                 rank,
                 n_iter_max=20,
                 init=cp_init,  # type: ignore
-                l1_reg={2: l1},
+                soft_sparsity={2: l1},
                 non_negative={0: True},
             )
         else:
