@@ -1,6 +1,6 @@
 import numpy as np
 import anndata
-from scipy.sparse import csc_matrix, csr_matrix
+from scipy.sparse import csc_matrix, csr_matrix, csr_array
 from sklearn.utils.sparsefuncs import (
     inplace_column_scale,
     mean_variance_axis,
@@ -51,5 +51,46 @@ def prepare_dataset(
     # Pre-calculate gene means
     means, _ = mean_variance_axis(X.X, axis=0)  # type: ignore
     X.var["means"] = means
+
+    return X
+
+
+def deviance_prepare_dataset(
+    X: anndata.AnnData, condition_name: str, geneThreshold: float
+) -> anndata.AnnData:
+    X.X = csr_array(X.X)  # type: ignore
+    assert np.amin(X.X.data) >= 0.0
+
+    # Filter out genes with too few reads
+    X = X[:, X.X.mean(axis=0) > geneThreshold]
+
+    # Copy so that the subsetting is preserved
+    X._init_as_actual(X.copy())
+
+    # deviance transform
+    y_ij = X.X.toarray()  # type: ignore
+
+    # counts per cell
+    n_i = y_ij.sum(axis=1)
+
+    # MLE of gene expression
+    pi_j = y_ij.sum(axis=0) / np.sum(n_i)
+
+    non_y_ij = n_i[:, None] - y_ij
+    mu_ij = n_i[:, None] * pi_j[None, :]
+    signs = np.sign(y_ij - pi_j[None, :])
+
+    first_term = 2 * y_ij * np.log(np.maximum(y_ij, 1.0) / mu_ij)
+    second_term = 2 * non_y_ij * np.log(non_y_ij / (n_i[:, None] - mu_ij))
+
+    X.X = signs * np.sqrt(np.maximum(first_term + second_term, 0.0))
+    assert np.all(np.isfinite(X.X))  # type: ignore
+
+    # Get the indices for subsetting the data
+    _, sgIndex = np.unique(X.obs_vector(condition_name), return_inverse=True)
+    X.obs["condition_unique_idxs"] = sgIndex
+
+    # Skip gene means
+    X.var["means"] = np.zeros(X.shape[1])
 
     return X
