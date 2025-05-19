@@ -135,7 +135,7 @@ def parafac2_nd(
             _, factors = constrained_parafac(
                 projected_X,
                 rank,
-                n_iter_max=20,
+                n_iter_max=5,
                 init=cp_init,  # type: ignore
                 soft_sparsity={2: l1},
                 non_negative={0: True},
@@ -144,7 +144,7 @@ def parafac2_nd(
             _, factors = parafac(
                 projected_X,
                 rank,
-                n_iter_max=20,
+                n_iter_max=5,
                 init=cp_init,  # type: ignore
                 tol=None,  # type: ignore
                 normalize_factors=False,
