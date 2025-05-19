@@ -1,7 +1,9 @@
 from itertools import combinations
+
 import numpy as np
 import tensorly as tl
 from tensorly.tenalg import khatri_rao, mode_dot
+
 from .jointdiag import jointdiag
 
 
@@ -43,7 +45,8 @@ def SECSI(X, d: int, maxIter: int = 50, tolerance=1e-12, verbose=True):
         conds = np.linalg.cond(SMD.T)
 
         ###
-        # Using computed SMDs, we now generate factor matrices through joint diagonalization
+        # Using computed SMDs, we now generate factor matrices
+        # through joint diagonalization
 
         # Save matrix slice with minimal norm
         optimal_slice = SMD[:, :, np.argmin(conds)]  # Pivot Slice
@@ -55,7 +58,7 @@ def SECSI(X, d: int, maxIter: int = 50, tolerance=1e-12, verbose=True):
         SMD_lhs = np.linalg.solve(optimal_slice, np.moveaxis(SMD, 2, 0)).T
 
         for SMD_sel, first_mode, second_mode in zip(
-            [SMD_rhs, SMD_lhs], (k_mode, l_mode), (l_mode, k_mode)
+            [SMD_rhs, SMD_lhs], (k_mode, l_mode), (l_mode, k_mode), strict=False
         ):
             # Compute joint diagonalization of all matrix slices in SMD
             Diags, Transform = jointdiag(
@@ -86,7 +89,8 @@ def SECSI(X, d: int, maxIter: int = 50, tolerance=1e-12, verbose=True):
                     (cp_tensor.factors[mode_not_kl], cp_tensor.factors[first_mode])
                 )
 
-            # Estimates final factor matrix by solving least squares matrix equation using least squares solution to X * krp = unfolding
+            # Estimates final factor matrix by solving least squares matrix equation
+            # using least squares solution to X * krp = unfolding
             cp_tensor.factors[second_mode], resid, _, _ = np.linalg.lstsq(
                 krp, tl.unfold(X, second_mode).T, rcond=None
             )

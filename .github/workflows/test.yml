@@ -20,7 +20,7 @@ jobs:
       uses: eifinger/setup-rye@v4
       with:
         enable-cache: true
-        version: '0.39.0'
+        version: '0.44.0'
     - name: Pin Python version
       run: rye pin ${{ matrix.python-version }}
     - name: Setup environment

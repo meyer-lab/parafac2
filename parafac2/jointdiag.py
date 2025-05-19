@@ -1,4 +1,5 @@
 from itertools import combinations
+
 import numpy as np
 
 
@@ -18,7 +19,7 @@ def jointdiag(
     X = SMD.copy()
     D = X.shape[0]  # Dimension of square matrix slices
     assert X.ndim == 3, "Input must be a 3D tensor"
-    assert D == X.shape[1], "All slices must be square"
+    assert X.shape[1] == D, "All slices must be square"
     assert np.all(np.isreal(X)), "Must be real-valued"
 
     # Initial error calculation

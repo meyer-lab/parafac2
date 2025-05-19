@@ -1,15 +1,18 @@
 import numpy as np
 import tensorly as tl
-from tensorly.random import random_cp
 from tensorly.metrics.similarity import correlation_index as corridx
+from tensorly.random import random_cp
+
 from ..SECSI import SECSI
 
 
 def SECSItest(dim, true_rank, est_rank, noise=0.0, verbose=True):
     """
-    Built to test SECSI.py function. Creates three random factor matrices based on given dimension, rank.
+    Built to test SECSI.py function. Creates three random factor matrices based
+    on given dimension, rank.
     Computes CP tensor based on these matrices.
-    Optionally adds noise to tensor. Tensor is then fed to SECSI, which outputs estimated factor matrices.
+    Optionally adds noise to tensor. Tensor is then fed to SECSI,
+    which outputs estimated factor matrices.
     Estimate tensor is built from these estimated factor matrices
     All estimates are evaluated, ranked by accuracy.
 
@@ -25,7 +28,7 @@ def SECSItest(dim, true_rank, est_rank, noise=0.0, verbose=True):
     tensor = tl.cp_to_tensor(tensor_fac)
 
     # Adds noise
-    tensor = tensor + np.random.normal(size=dim, scale=noise)
+    tensor = tensor + np.random.normal(size=dim, scale=noise)  # noqa: NPY002
 
     norm_est, cp_estimates = SECSI(tensor, est_rank, 50, verbose=False)
 
@@ -38,9 +41,9 @@ def SECSItest(dim, true_rank, est_rank, noise=0.0, verbose=True):
     if verbose:
         for i, resid in enumerate(norm_est):
             if i == np.argmin(norm_est):
-                print("Best estimate, {0}, has error: {1:.3e}".format(i, resid))
+                print(f"Best estimate, {i}, has error: {resid:.3e}")
             else:
-                print("Estimate #{0} has error: {1:.3e}".format(i, resid))
+                print(f"Estimate #{i} has error: {resid:.3e}")
     return np.min(norm_est)
 
 

@@ -2,18 +2,18 @@
 Test the data import.
 """
 
-import pytest
 import anndata
-from scipy.sparse import csr_matrix
-import numpy as np
 import cupy as cp
+import numpy as np
+import pytest
+from scipy.sparse import csr_matrix
 from tensorly.decomposition import parafac2
-from tensorly.random import random_parafac2
-from ..parafac2 import parafac2_nd, parafac2_init
-from ..utils import reconstruction_error, project_data
-from tensorly.parafac2_tensor import parafac2_to_slices
 from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
+from tensorly.parafac2_tensor import parafac2_to_slices
+from tensorly.random import random_parafac2
 
+from ..parafac2 import parafac2_init, parafac2_nd
+from ..utils import project_data, reconstruction_error
 
 pf2shape = [(500, 2000)] * 8
 X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)  # type: ignore
@@ -153,7 +153,7 @@ def test_pf2_proj_centering():
     np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
 
     # De-mean since we aim to subtract off the means
-    means = np.random.randn(X_pf[0].shape[1])
+    means = np.random.randn(X_pf[0].shape[1])  # noqa: NPY002
     X_pf = [xx + means for xx in X_pf]
 
     projections, projected_X_mean = project_data(X_pf, cp.array(means), factors)

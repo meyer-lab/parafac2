@@ -1,10 +1,10 @@
-import numpy as np
 import anndata
+import numpy as np
 from scipy.sparse import csc_matrix, csr_matrix
 from sklearn.utils.sparsefuncs import (
     inplace_column_scale,
-    mean_variance_axis,
     inplace_row_scale,
+    mean_variance_axis,
 )
 
 
@@ -12,7 +12,7 @@ def normalize_total(adata: anndata.AnnData):
     counts_per_cell = np.array(adata.X.sum(axis=1)).flatten()  # type: ignore
     cell_subset = counts_per_cell > 0
 
-    if issubclass(adata.X.dtype.type, (int, np.integer)):  # type: ignore
+    if issubclass(adata.X.dtype.type, int | np.integer):  # type: ignore
         adata.X = adata.X.astype(np.float32)  # type: ignore
 
     counts_per_cell /= np.median(counts_per_cell[cell_subset])
