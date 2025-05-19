@@ -1,10 +1,10 @@
-import numpy as np
-import cupy as cp
 import anndata
+import cupy as cp
+import numpy as np
 import scipy.sparse as sps
 from cupyx.scipy import sparse as cupy_sparse
-from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 from scipy.optimize import linear_sum_assignment
+from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 
 
 def anndata_to_list(X_in: anndata.AnnData) -> list[np.ndarray | sps.csr_array]:

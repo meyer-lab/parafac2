@@ -1,18 +1,20 @@
 import os
-from typing import Optional, Callable
+from collections.abc import Callable
 from copy import deepcopy
+
 import anndata
 import numpy as np
-from tqdm import tqdm
 from scipy.sparse.linalg import norm
-from .SECSI import SECSI
-from tensorly.decomposition import parafac, constrained_parafac
 from sklearn.utils.extmath import randomized_svd
+from tensorly.decomposition import constrained_parafac, parafac
+from tqdm import tqdm
+
+from .SECSI import SECSI
 from .utils import (
+    anndata_to_list,
+    project_data,
     reconstruction_error,
     standardize_pf2,
-    project_data,
-    anndata_to_list,
 )
 
 
@@ -38,7 +40,7 @@ def store_pf2(
 def parafac2_init(
     X_in: anndata.AnnData,
     rank: int,
-    random_state: Optional[int] = None,
+    random_state: int | None = None,
 ) -> tuple[list[np.ndarray], float]:
     # Index dataset to a list of conditions
     n_cond = len(X_in.obs["condition_unique_idxs"].cat.categories)
@@ -62,9 +64,9 @@ def parafac2_nd(
     n_iter_max: int = 100,
     tol: float = 1e-6,
     l1=0.0,
-    random_state: Optional[int] = None,
+    random_state: int | None = None,
     SECSI_solver=False,
-    callback: Optional[Callable[[int, float, list, list], None]] = None,
+    callback: Callable[[int, float, list, list], None] | None = None,
 ) -> tuple[tuple, float]:
     r"""The same interface as regular PARAFAC2."""
     # Verbose if this is not an automated build
