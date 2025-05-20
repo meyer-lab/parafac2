@@ -122,8 +122,7 @@ def test_pf2_r2x():
 
 @pytest.mark.parametrize("SECSI_solver", [False, True])
 @pytest.mark.parametrize("sparse", [False, True])
-@pytest.mark.parametrize("l1", [0.0, 0.00001])
-def test_performance(sparse: bool, SECSI_solver: bool, l1: float):
+def test_performance(sparse: bool, SECSI_solver: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
     # 5000 by 2000 by 300 is roughly the lupus data
     pf2shape = [(5_00, 2_00)] * 30
@@ -131,7 +130,7 @@ def test_performance(sparse: bool, SECSI_solver: bool, l1: float):
 
     X = pf2_to_anndata(X, sparse=sparse)
 
-    (w1, f1, p1), e1 = parafac2_nd(X, rank=9, SECSI_solver=SECSI_solver, l1=l1)
+    (w1, f1, p1), e1 = parafac2_nd(X, rank=9, SECSI_solver=SECSI_solver)
 
 
 def test_pf2_proj_centering():
