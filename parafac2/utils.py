@@ -7,7 +7,7 @@ from scipy.optimize import linear_sum_assignment
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 
 
-def anndata_to_list(X_in: anndata.AnnData) -> list[np.ndarray | sps.csr_array]:
+def anndata_to_list(X_in: anndata.AnnData) -> list[np.ndarray | sps.csr_matrix]:
     # Index dataset to a list of conditions
     sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
 
