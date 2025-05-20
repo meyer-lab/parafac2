@@ -6,7 +6,7 @@ import anndata
 import numpy as np
 from scipy.sparse.linalg import norm
 from sklearn.utils.extmath import randomized_svd
-from tensorly.decomposition import constrained_parafac, parafac
+from tensorly.decomposition import parafac
 from tqdm import tqdm
 
 from .SECSI import SECSI
@@ -63,7 +63,6 @@ def parafac2_nd(
     rank: int,
     n_iter_max: int = 100,
     tol: float = 1e-6,
-    l1=0.0,
     random_state: int | None = None,
     SECSI_solver=False,
     callback: Callable[[int, float, list, list], None] | None = None,
@@ -131,24 +130,14 @@ def parafac2_nd(
         factors_old = deepcopy(factors)
         cp_init = (None, factors)
 
-        if l1 > 0.0:
-            _, factors = constrained_parafac(
-                projected_X,
-                rank,
-                n_iter_max=20,
-                init=cp_init,  # type: ignore
-                soft_sparsity={2: l1},
-                non_negative={0: True},
-            )
-        else:
-            _, factors = parafac(
-                projected_X,
-                rank,
-                n_iter_max=20,
-                init=cp_init,  # type: ignore
-                tol=None,  # type: ignore
-                normalize_factors=False,
-            )
+        _, factors = parafac(
+            projected_X,
+            rank,
+            n_iter_max=5,
+            init=cp_init,  # type: ignore
+            tol=None,  # type: ignore
+            normalize_factors=False,
+        )
 
         delta = errs[-2] - errs[-1]
         tq.set_postfix(
