@@ -7,13 +7,13 @@ license = "MIT"
 requires-python = ">= 3.11"
 
 dependencies = [
-    "numpy>=2.1",
+    "numpy>=2.2",
     "scipy>=1.15",
     "tensorly>=0.8.1",
     "tqdm>=4.66",
     "cupy-cuda12x>=13.4",
     "anndata>=0.11",
-    "scikit-learn>=1.6.1",
+    "scikit-learn>=1.6",
 ]
 
 [tool.rye]
