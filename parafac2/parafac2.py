@@ -6,7 +6,8 @@ import anndata
 import numpy as np
 from scipy.sparse.linalg import norm
 from sklearn.utils.extmath import randomized_svd
-from tensorly.decomposition import constrained_parafac, parafac
+from tensorly.cp_tensor import cp_normalize
+from tensorly.tenalg.core_tenalg import unfolding_dot_khatri_rao
 from tqdm import tqdm
 
 from .SECSI import SECSI
@@ -52,10 +53,51 @@ def parafac2_init(
     else:
         norm_tensor = float(norm(X_in.X) ** 2.0 - 2 * np.sum(lmult))
 
-    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state)  # type: ignore
+    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state)
 
     factors = [np.ones((n_cond, rank)), np.eye(rank), C.T]
     return factors, norm_tensor
+
+
+def parafac(
+    tensor: np.ndarray,
+    factors: list[np.ndarray],
+    n_iter_max: int = 3,
+) -> list[np.ndarray]:
+    """Decomposes a tensor into a set of factor matrices using the PARAFAC2 algorithm.
+    PARAFAC2 decomposes a tensor into a set of factor matrices, where one factor
+    matrix can vary across slices in one mode. This function implements the core
+    PARAFAC2 algorithm using alternating least squares.
+    Args:
+        tensor (numpy.ndarray): The tensor to decompose.
+        factors (list of numpy.ndarray): Initial guess for the factor matrices.
+            The length of the list must be equal to the number of modes in the tensor.
+            Each element of the list is a numpy.ndarray of shape (size_mode_i, rank),
+            where size_mode_i is the size of the tensor along mode i, and rank is
+            the desired rank of the decomposition.
+        n_iter_max (int, optional): Maximum number of iterations for the algorithm.
+            Defaults to 3.
+    Returns:
+        list of numpy.ndarray: A list containing the factor matrices.
+            The order of the factor matrices corresponds to the modes of the input
+            tensor. The first factor matrix is scaled by the weights.
+    """
+    rank = factors[0].shape[1]
+
+    for _ in range(n_iter_max):
+        for mode in range(tensor.ndim):
+            pinv = np.ones((rank, rank))
+            for i, factor in enumerate(factors):
+                if i != mode:
+                    pinv *= factor.T @ factor
+
+            mttkrp = unfolding_dot_khatri_rao(tensor, (None, factors), mode)
+            factors[mode] = np.linalg.solve(pinv.T, mttkrp.T).T
+
+    weights, factors = cp_normalize((None, factors))
+    factors[0] *= weights[None, :]
+
+    return factors
 
 
 def parafac2_nd(
@@ -63,7 +105,6 @@ def parafac2_nd(
     rank: int,
     n_iter_max: int = 100,
     tol: float = 1e-6,
-    l1=0.0,
     random_state: int | None = None,
     SECSI_solver=False,
     callback: Callable[[int, float, list, list], None] | None = None,
@@ -129,26 +170,11 @@ def parafac2_nd(
         errs.append(err / norm_tensor)
 
         factors_old = deepcopy(factors)
-        cp_init = (None, factors)
 
-        if l1 > 0.0:
-            _, factors = constrained_parafac(
-                projected_X,
-                rank,
-                n_iter_max=5,
-                init=cp_init,  # type: ignore
-                soft_sparsity={2: l1},
-                non_negative={0: True},
-            )
-        else:
-            _, factors = parafac(
-                projected_X,
-                rank,
-                n_iter_max=5,
-                init=cp_init,  # type: ignore
-                tol=None,  # type: ignore
-                normalize_factors=False,
-            )
+        factors = parafac(
+            projected_X,
+            factors,
+        )
 
         delta = errs[-2] - errs[-1]
         tq.set_postfix(
