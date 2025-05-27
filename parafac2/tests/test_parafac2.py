@@ -15,10 +15,6 @@ from tensorly.random import random_parafac2
 from ..parafac2 import parafac2_init, parafac2_nd
 from ..utils import project_data, reconstruction_error
 
-pf2shape = [(500, 2000)] * 8
-X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)  # type: ignore
-norm_tensor = float(np.linalg.norm(X) ** 2)
-
 
 def pf2_to_anndata(X_list, sparse=False):
     if sparse:
@@ -40,17 +36,21 @@ def pf2_to_anndata(X_list, sparse=False):
 @pytest.mark.parametrize("sparse", [False, True])
 def test_init_reprod(sparse: bool):
     """Test for reproducibility with the dense formulation."""
-    X_ann = pf2_to_anndata(X, sparse=sparse)
+    pf2shape_reprod = [(300, 200)] * 5
+    X_reprod: list[np.ndarray] = random_parafac2(pf2shape_reprod, rank=3, full=True)  # type: ignore
+
+    X_ann = pf2_to_anndata(X_reprod, sparse=sparse)
 
     f1, _ = parafac2_init(X_ann, rank=3, random_state=1)
     f2, _ = parafac2_init(X_ann, rank=3, random_state=1)
 
     # Compare both seeds
     for ii in range(3):
-        cp.testing.assert_array_equal(f1[ii], f2[ii])
+        np.testing.assert_array_equal(f1[ii], f2[ii])
 
-    proj1, proj_X1 = project_data(X, cp.zeros((1, X_ann.shape[1])), f1)
-    proj2, proj_X2 = project_data(X, cp.zeros((1, X_ann.shape[1])), f2)
+    means = np.array(X_ann.var["means"])
+    proj1, proj_X1 = project_data(X_reprod, means, f1)
+    proj2, proj_X2 = project_data(X_reprod, means, f2)
 
     # Compare both seeds
     cp.testing.assert_array_equal(proj_X1, proj_X2)
@@ -63,10 +63,16 @@ def test_init_reprod(sparse: bool):
 @pytest.mark.parametrize("sparse", [False, True])
 def test_parafac2(sparse: bool, SECSI_solver: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
+    pf2shape = [(250, 1000)] * 8
+    X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)  # type: ignore
+    norm_tensor = float(np.linalg.norm(X) ** 2)
+
     X_ann = pf2_to_anndata(X, sparse=sparse)
 
+    options = {"tol": 1e-9, "n_iter_max": 200}
+
     (w1, f1, p1), e1 = parafac2_nd(
-        X_ann, rank=3, random_state=1, SECSI_solver=SECSI_solver
+        X_ann, rank=3, random_state=1, SECSI_solver=SECSI_solver, **options
     )
 
     # Test that the model still matches the data
@@ -75,14 +81,14 @@ def test_parafac2(sparse: bool, SECSI_solver: bool):
 
     # Test reproducibility
     (w2, f2, p2), e2 = parafac2_nd(
-        X_ann, rank=3, random_state=1, SECSI_solver=SECSI_solver
+        X_ann, rank=3, random_state=3, SECSI_solver=SECSI_solver, **options
     )
     # Compare to TensorLy
     wT, fT, pT = parafac2(
         X,
         rank=3,
         normalize_factors=True,
-        n_iter_max=5,
+        n_iter_max=20,
         init=(w1.copy(), [f.copy() for f in f1], [p.copy() for p in p1]),  # type: ignore
     )
 
@@ -107,12 +113,15 @@ def test_parafac2(sparse: bool, SECSI_solver: bool):
 
 def test_pf2_r2x():
     """Compare R2X values to tensorly implementation"""
+    pf2shape = [(50, 200)] * 8
+    X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)  # type: ignore
+    norm_tensor = float(np.linalg.norm(X) ** 2)
+
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
 
     p, projected_X = project_data(X, cp.zeros((1, X[0].shape[1])), f)
     errCMF = reconstruction_error(f, p, projected_X, norm_tensor)
 
-    f = [cp.asnumpy(ff) for ff in f]
     p = [cp.asnumpy(pp) for pp in p]
 
     err = _parafac2_reconstruction_error(X, (w, f, p)) ** 2
