@@ -5,9 +5,9 @@ from copy import deepcopy
 import anndata
 import numpy as np
 from scipy.sparse.linalg import norm
+from sklearn.utils.extmath import randomized_svd
 from tensorly.cp_tensor import cp_normalize
 from tensorly.tenalg.core_tenalg import unfolding_dot_khatri_rao
-from tensorly.tenalg.svd import randomized_svd
 from tqdm import tqdm
 
 from .SECSI import SECSI
