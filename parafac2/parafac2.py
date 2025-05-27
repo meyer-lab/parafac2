@@ -5,9 +5,9 @@ from copy import deepcopy
 import anndata
 import numpy as np
 from scipy.sparse.linalg import norm
-from sklearn.utils.extmath import randomized_svd
 from tensorly.cp_tensor import cp_normalize
 from tensorly.tenalg.core_tenalg import unfolding_dot_khatri_rao
+from tensorly.tenalg.svd import randomized_svd
 from tqdm import tqdm
 
 from .SECSI import SECSI
@@ -53,7 +53,7 @@ def parafac2_init(
     else:
         norm_tensor = float(norm(X_in.X) ** 2.0 - 2 * np.sum(lmult))
 
-    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state)  # type: ignore
+    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state)
 
     factors = [np.ones((n_cond, rank)), np.eye(rank), C.T]
     return factors, norm_tensor
@@ -62,7 +62,7 @@ def parafac2_init(
 def parafac(
     tensor: np.ndarray,
     factors: list[np.ndarray],
-    n_iter_max: int = 5,
+    n_iter_max: int = 3,
 ) -> list[np.ndarray]:
     """Decomposes a tensor into a set of factor matrices using the PARAFAC2 algorithm.
     PARAFAC2 decomposes a tensor into a set of factor matrices, where one factor
@@ -76,7 +76,7 @@ def parafac(
             where size_mode_i is the size of the tensor along mode i, and rank is
             the desired rank of the decomposition.
         n_iter_max (int, optional): Maximum number of iterations for the algorithm.
-            Defaults to 5.
+            Defaults to 3.
     Returns:
         list of numpy.ndarray: A list containing the factor matrices.
             The order of the factor matrices corresponds to the modes of the input
