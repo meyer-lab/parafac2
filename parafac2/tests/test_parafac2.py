@@ -6,7 +6,7 @@ import anndata
 import cupy as cp
 import numpy as np
 import pytest
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_array
 from tensorly.decomposition import parafac2
 from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
 from tensorly.parafac2_tensor import parafac2_to_slices
@@ -18,7 +18,7 @@ from ..utils import project_data, reconstruction_error
 
 def pf2_to_anndata(X_list, sparse=False):
     if sparse:
-        X_list = [csr_matrix(XX) for XX in X_list]
+        X_list = [csr_array(XX) for XX in X_list]
 
     X_ann = [anndata.AnnData(XX) for XX in X_list]
 

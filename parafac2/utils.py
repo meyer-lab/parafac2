@@ -1,13 +1,12 @@
 import anndata
 import cupy as cp
 import numpy as np
-import scipy.sparse as sps
 from cupyx.scipy import sparse as cupy_sparse
 from scipy.optimize import linear_sum_assignment
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 
 
-def anndata_to_list(X_in: anndata.AnnData) -> list[np.ndarray | sps.csr_array]:
+def anndata_to_list(X_in: anndata.AnnData) -> list[cp.ndarray | cupy_sparse.csr_matrix]:
     # Index dataset to a list of conditions
     sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
 
@@ -23,7 +22,7 @@ def anndata_to_list(X_in: anndata.AnnData) -> list[np.ndarray | sps.csr_array]:
 
 
 def project_data(
-    X_list: list, means: np.ndarray, factors: list[np.ndarray]
+    X_list: list[cp.ndarray | np.ndarray], means: np.ndarray, factors: list[np.ndarray]
 ) -> tuple[list[np.ndarray], np.ndarray]:
     A, B, C = factors
 
