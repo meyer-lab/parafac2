@@ -6,6 +6,7 @@ import anndata
 import cupy as cp
 import numpy as np
 from scipy.sparse.linalg import norm
+from sklearn.utils import resample
 from sklearn.utils.extmath import randomized_svd
 from tqdm import tqdm
 
@@ -52,7 +53,12 @@ def parafac2_init(
     else:
         norm_tensor = float(norm(X_in.X) ** 2.0 - 2 * np.sum(lmult))
 
-    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state)
+    if X_in.shape[0] > X_in.shape[1] * 10:
+        X_svd = resample(X_in.X, n_samples=X_in.shape[1] * 10)
+    else:
+        X_svd = X_in.X
+
+    _, _, C = randomized_svd(X_svd, rank, random_state=random_state)  # type: ignore
 
     factors = [np.ones((n_cond, rank)), np.eye(rank), C.T]
     return factors, norm_tensor
