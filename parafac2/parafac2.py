@@ -103,7 +103,7 @@ def parafac2_nd(
     if "means" in X_in.var:
         means = cp.array(X_in.var["means"].to_numpy())
     else:
-        means = cp.zeros((1, factors[2].shape[0]))
+        means = cp.zeros((1, X_in.shape[1]))
 
     factors, norm_tensor = parafac2_init(X_list, means, rank, random_state)
 
