@@ -6,7 +6,6 @@ import anndata
 import cupy as cp
 import numpy as np
 from scipy.sparse.linalg import norm
-from sklearn.utils import resample
 from sklearn.utils.extmath import randomized_svd
 from tqdm import tqdm
 

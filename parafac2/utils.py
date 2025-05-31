@@ -5,52 +5,6 @@ import tensorly as tl
 from cupyx.scipy import sparse as cupy_sparse
 from scipy.optimize import linear_sum_assignment
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
-from tensorly.tenalg.core_tenalg import unfolding_dot_khatri_rao
-
-
-def parafac(
-    tensor: cp.ndarray,
-    factors: list[cp.ndarray],
-    n_iter_max: int = 3,
-) -> list[cp.ndarray]:
-    """Decomposes a tensor into a set of factor matrices using the PARAFAC2 algorithm.
-    PARAFAC2 decomposes a tensor into a set of factor matrices, where one factor
-    matrix can vary across slices in one mode. This function implements the core
-    PARAFAC2 algorithm using alternating least squares.
-    Args:
-        tensor (numpy.ndarray): The tensor to decompose.
-        factors (list of numpy.ndarray): Initial guess for the factor matrices.
-            The length of the list must be equal to the number of modes in the tensor.
-            Each element of the list is a numpy.ndarray of shape (size_mode_i, rank),
-            where size_mode_i is the size of the tensor along mode i, and rank is
-            the desired rank of the decomposition.
-        n_iter_max (int, optional): Maximum number of iterations for the algorithm.
-            Defaults to 3.
-    Returns:
-        list of numpy.ndarray: A list containing the factor matrices.
-            The order of the factor matrices corresponds to the modes of the input
-            tensor. The first factor matrix is scaled by the weights.
-    """
-    rank = factors[0].shape[1]
-
-    tl.set_backend("cupy")
-
-    for _ in range(n_iter_max):
-        for mode in range(tensor.ndim):
-            pinv = cp.ones((rank, rank))
-            for i, factor in enumerate(factors):
-                if i != mode:
-                    pinv *= factor.T @ factor
-
-            mttkrp = unfolding_dot_khatri_rao(tensor, (None, factors), mode)
-            factors[mode] = cp.linalg.solve(pinv.T, mttkrp.T).T
-
-    weights, factors = cp_normalize((None, factors))
-    factors[0] *= weights[None, :]
-
-    tl.set_backend("numpy")
-
-    return factors
 
 
 def parafac(
