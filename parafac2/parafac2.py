@@ -57,10 +57,11 @@ def parafac2_init(
     total_rows = 0
 
     for X_cond in X_in:
-        if isinstance(X_cond, cp.ndarray):
-            cov_matrix += X_cond.T @ X_cond
+        if isinstance(X_cond, cupy_sparse.csr_matrix):
+            XX = X_cond.toarray()
+            cov_matrix += XX.T @ XX
         else:
-            cov_matrix += (X_cond.T @ X_cond).toarray()
+            cov_matrix += X_cond.T @ X_cond
 
         axis0_sum += X_cond.sum(axis=0).flatten()
         total_rows += X_cond.shape[0]
