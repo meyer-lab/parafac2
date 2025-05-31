@@ -12,10 +12,7 @@ def parafac(
     factors: list[cp.ndarray],
     n_iter_max: int = 3,
 ) -> list[cp.ndarray]:
-    """Decomposes a tensor into a set of factor matrices using the PARAFAC2 algorithm.
-    PARAFAC2 decomposes a tensor into a set of factor matrices, where one factor
-    matrix can vary across slices in one mode. This function implements the core
-    PARAFAC2 algorithm using alternating least squares.
+    """Decomposes a tensor into a set of factor matrices using the PARAFAC algorithm.
     Args:
         tensor (numpy.ndarray): The tensor to decompose.
         factors (list of numpy.ndarray): Initial guess for the factor matrices.
@@ -33,7 +30,7 @@ def parafac(
     rank = factors[0].shape[1]
 
     for _ in range(n_iter_max):
-        for mode in range(3):
+        for mode in range(tensor.ndim):
             pinv = cp.ones((rank, rank))
             for i, factor in enumerate(factors):
                 if i != mode:
@@ -50,11 +47,11 @@ def parafac(
             factors[mode] = cp.linalg.solve(pinv.T, mttkrp.T).T
 
     tl.set_backend("cupy")
-
     weights, factors = cp_normalize((None, factors))
-    factors[0] *= weights[None, :]
-
     tl.set_backend("numpy")
+
+    # apply weights to first factor matrix
+    factors[0] *= weights[None, :]
 
     return factors
 
