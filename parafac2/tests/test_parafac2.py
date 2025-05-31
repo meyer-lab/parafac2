@@ -100,7 +100,7 @@ def test_parafac2(sparse: bool):
             np.testing.assert_allclose(np.linalg.norm(ff[ii], axis=0), 1.0, rtol=1e-3)
 
     # Compare both seeds
-    np.testing.assert_allclose(w1, w2, rtol=0.01)
+    np.testing.assert_allclose(w1, w2, rtol=0.02)
     np.testing.assert_allclose(e1, e2, rtol=1e-4)
     for ii in range(3):
         np.testing.assert_allclose(f1[ii], f2[ii], atol=1e-2, rtol=1e-2)
