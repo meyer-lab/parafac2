@@ -54,7 +54,9 @@ def parafac2_init(
         norm_tensor = float(norm(X_in.X) ** 2.0 - 2 * np.sum(lmult))
 
     if X_in.shape[0] > X_in.shape[1] * 10:
-        X_svd = resample(X_in.X, n_samples=X_in.shape[1] * 10)
+        X_svd = resample(
+            X_in.X, n_samples=X_in.shape[1] * 10, random_state=random_state
+        )
     else:
         X_svd = X_in.X
 
