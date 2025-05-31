@@ -2,6 +2,7 @@ import anndata
 import numpy as np
 from scipy.sparse import csr_array, issparse
 from scipy.special import xlogy
+from sklearn.preprocessing import scale
 
 
 def prepare_dataset(
@@ -120,6 +121,7 @@ def get_deviance(data: csr_array) -> np.ndarray:
     deviance = np.maximum(deviance, 0.0)  # Ensure non-negative before sqrt
 
     # Calculate signed square root residuals: sign(y - mu) * sqrt(D)
-    signs = np.sign(y_ij - mu_ij)
+    residuals = np.sqrt(deviance) * np.sign(y_ij - mu_ij)
 
-    return signs * np.sqrt(deviance)
+    # z-score
+    return scale(residuals)

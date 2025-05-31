@@ -59,9 +59,8 @@ def test_init_reprod(sparse: bool):
         cp.testing.assert_array_equal(proj1[ii], proj2[ii])
 
 
-@pytest.mark.parametrize("SECSI_solver", [False, True])
 @pytest.mark.parametrize("sparse", [False, True])
-def test_parafac2(sparse: bool, SECSI_solver: bool):
+def test_parafac2(sparse: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
     pf2shape = [(250, 1000)] * 8
     X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)  # type: ignore
@@ -71,18 +70,14 @@ def test_parafac2(sparse: bool, SECSI_solver: bool):
 
     options = {"tol": 1e-9, "n_iter_max": 200}
 
-    (w1, f1, p1), e1 = parafac2_nd(
-        X_ann, rank=3, random_state=1, SECSI_solver=SECSI_solver, **options
-    )
+    (w1, f1, p1), e1 = parafac2_nd(X_ann, rank=3, random_state=1, **options)
 
     # Test that the model still matches the data
     err = _parafac2_reconstruction_error(X, (w1, f1, p1)) ** 2
     np.testing.assert_allclose(1.0 - err / norm_tensor, e1, rtol=1e-5)
 
     # Test reproducibility
-    (w2, f2, p2), e2 = parafac2_nd(
-        X_ann, rank=3, random_state=3, SECSI_solver=SECSI_solver, **options
-    )
+    (w2, f2, p2), e2 = parafac2_nd(X_ann, rank=3, random_state=3, **options)
     # Compare to TensorLy
     wT, fT, pT = parafac2(
         X,
@@ -129,9 +124,8 @@ def test_pf2_r2x():
     np.testing.assert_allclose(err, errCMF, rtol=1e-8)
 
 
-@pytest.mark.parametrize("SECSI_solver", [False, True])
 @pytest.mark.parametrize("sparse", [False, True])
-def test_performance(sparse: bool, SECSI_solver: bool):
+def test_performance(sparse: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
     # 5000 by 2000 by 300 is roughly the lupus data
     pf2shape = [(5_00, 2_00)] * 30
@@ -139,7 +133,7 @@ def test_performance(sparse: bool, SECSI_solver: bool):
 
     X = pf2_to_anndata(X, sparse=sparse)
 
-    (w1, f1, p1), e1 = parafac2_nd(X, rank=9, SECSI_solver=SECSI_solver)
+    (w1, f1, p1), e1 = parafac2_nd(X, rank=9)
 
 
 def test_pf2_proj_centering():
