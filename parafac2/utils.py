@@ -75,7 +75,7 @@ def anndata_to_list(X_in: anndata.AnnData) -> list[cp.ndarray | cupy_sparse.csr_
 
 def project_data(
     X_list: list[cp.ndarray | np.ndarray],
-    means: np.ndarray,
+    means: cp.ndarray,
     factors: list[cp.ndarray],
     norm_X_sq: float,
     return_projections=False,

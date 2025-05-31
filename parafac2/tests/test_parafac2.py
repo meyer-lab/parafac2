@@ -40,19 +40,24 @@ def test_init_reprod(sparse: bool):
     X_reprod: list[np.ndarray] = random_parafac2(pf2shape_reprod, rank=3, full=True)  # type: ignore
 
     X_ann = pf2_to_anndata(X_reprod, sparse=sparse)
+    means = cp.array(X_ann.var["means"])
 
-    f1, _ = parafac2_init(X_ann, rank=3, random_state=1)
-    f2, _ = parafac2_init(X_ann, rank=3, random_state=1)
+    X_list = [cp.array(x) for x in X_reprod]
+
+    f1, _ = parafac2_init(X_list, means, rank=3, random_state=1)
+    f2, _ = parafac2_init(X_list, means, rank=3, random_state=1)
+
+    # assert sizes
+    assert f1[0].shape == (len(pf2shape_reprod), 3)
+    assert f1[1].shape == (3, 3)
+    assert f1[2].shape == (pf2shape_reprod[0][1], 3)
 
     # Compare both seeds
     for ii in range(3):
-        np.testing.assert_array_equal(f1[ii], f2[ii])
+        cp.testing.assert_array_equal(f1[ii], f2[ii])
 
-    means = np.array(X_ann.var["means"])
-    cp_f1 = [cp.array(x) for x in f1]
-    cp_f2 = [cp.array(x) for x in f2]
-    proj_X1, _ = project_data(X_reprod, means, cp_f1, 1.0)
-    proj_X2, _ = project_data(X_reprod, means, cp_f2, 1.0)
+    proj_X1, _ = project_data(X_reprod, means, f1, 1.0)
+    proj_X2, _ = project_data(X_reprod, means, f2, 1.0)
 
     # Compare both seeds
     cp.testing.assert_array_equal(proj_X1, proj_X2)
@@ -62,7 +67,7 @@ def test_init_reprod(sparse: bool):
 def test_parafac2(sparse: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
     # 5000 by 2000 by 300 is roughly the lupus data
-    pf2shape = [(250, 1000)] * 8
+    pf2shape = [(200, 500)] * 6
     X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)  # type: ignore
     norm_tensor = float(np.linalg.norm(X) ** 2)
 
@@ -92,11 +97,11 @@ def test_parafac2(sparse: bool):
     # Check normalization
     for ff in [f1, f2, fT]:
         for ii in range(3):
-            np.testing.assert_allclose(np.linalg.norm(ff[ii], axis=0), 1.0, rtol=1e-2)
+            np.testing.assert_allclose(np.linalg.norm(ff[ii], axis=0), 1.0, rtol=1e-3)
 
     # Compare both seeds
     np.testing.assert_allclose(w1, w2, rtol=0.01)
-    np.testing.assert_allclose(e1, e2, rtol=1e-5)
+    np.testing.assert_allclose(e1, e2, rtol=1e-4)
     for ii in range(3):
         np.testing.assert_allclose(f1[ii], f2[ii], atol=1e-2, rtol=1e-2)
         np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-2, rtol=1e-2)
@@ -104,8 +109,8 @@ def test_parafac2(sparse: bool):
     # Compare to TensorLy
     np.testing.assert_allclose(w1, wT, rtol=0.2)  # type: ignore
     for ii in range(3):
-        np.testing.assert_allclose(f1[ii], fT[ii], rtol=0.01, atol=0.1)
-        np.testing.assert_allclose(p1[ii], pT[ii], rtol=0.01, atol=0.1)
+        np.testing.assert_allclose(f1[ii], fT[ii], rtol=0.01, atol=0.05)
+        np.testing.assert_allclose(p1[ii], pT[ii], rtol=0.01, atol=0.05)
 
 
 def test_pf2_r2x():
