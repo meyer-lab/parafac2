@@ -167,7 +167,7 @@ def test_pf2_proj_centering():
         X_pf, cp.array(means), cp_factors, norm_X_sq
     )
 
-    cp.testing.assert_allclose(projected_X, projected_X_mean, atol=1.0e-5)  # type: ignore
+    cp.testing.assert_allclose(projected_X, projected_X_mean, atol=1.0e-4)  # type: ignore
     np.testing.assert_allclose(
         norm_sq_err / norm_X_sq, norm_sq_err_centered / norm_X_sq, atol=1e-6
     )

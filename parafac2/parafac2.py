@@ -117,15 +117,10 @@ def parafac2_nd(
         errs.append(err / norm_tensor)
 
         factors_old = deepcopy(factors)
-
-        factors = [cp.array(f) for f in factors]
-
         factors = parafac(
             projected_X,
             factors,
         )
-
-        factors = [cp.asnumpy(f) for f in factors]
 
         delta = errs[-2] - errs[-1]
         tq.set_postfix(
