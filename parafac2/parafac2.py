@@ -6,6 +6,7 @@ import anndata
 import cupy as cp
 import numpy as np
 from scipy.sparse.linalg import norm
+from sklearn.utils import resample
 from sklearn.utils.extmath import randomized_svd
 from tqdm import tqdm
 
@@ -118,10 +119,14 @@ def parafac2_nd(
 
         factors_old = deepcopy(factors)
 
+        factors = [cp.array(f) for f in factors]
+
         factors = parafac(
             projected_X,
             factors,
         )
+
+        factors = [cp.asnumpy(f) for f in factors]
 
         delta = errs[-2] - errs[-1]
         tq.set_postfix(
