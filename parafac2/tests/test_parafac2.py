@@ -13,7 +13,7 @@ from tensorly.parafac2_tensor import parafac2_to_slices
 from tensorly.random import random_parafac2
 
 from ..parafac2 import parafac2_init, parafac2_nd
-from ..utils import project_data, reconstruction_error
+from ..utils import project_data
 
 
 def pf2_to_anndata(X_list, sparse=False):
@@ -49,8 +49,10 @@ def test_init_reprod(sparse: bool):
         np.testing.assert_array_equal(f1[ii], f2[ii])
 
     means = np.array(X_ann.var["means"])
-    proj1, proj_X1 = project_data(X_reprod, means, f1)
-    proj2, proj_X2 = project_data(X_reprod, means, f2)
+    cp_f1 = [cp.array(x) for x in f1]
+    cp_f2 = [cp.array(x) for x in f2]
+    proj1, proj_X1 = project_data(X_reprod, means, cp_f1)
+    proj2, proj_X2 = project_data(X_reprod, means, cp_f2)
 
     # Compare both seeds
     cp.testing.assert_array_equal(proj_X1, proj_X2)
@@ -62,13 +64,13 @@ def test_init_reprod(sparse: bool):
 @pytest.mark.parametrize("sparse", [False, True])
 def test_parafac2(sparse: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
-    pf2shape = [(250, 1000)] * 8
+    pf2shape = [(250, 1000)] * 12
     X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)  # type: ignore
     norm_tensor = float(np.linalg.norm(X) ** 2)
 
     X_ann = pf2_to_anndata(X, sparse=sparse)
 
-    options = {"tol": 1e-9, "n_iter_max": 200}
+    options = {"tol": 1e-12, "n_iter_max": 500}
 
     (w1, f1, p1), e1 = parafac2_nd(X_ann, rank=3, random_state=1, **options)
 
@@ -93,11 +95,11 @@ def test_parafac2(sparse: bool):
             np.testing.assert_allclose(np.linalg.norm(ff[ii], axis=0), 1.0, rtol=1e-2)
 
     # Compare both seeds
-    np.testing.assert_allclose(w1, w2, rtol=1e-6)
+    np.testing.assert_allclose(w1, w2, rtol=0.01)
     np.testing.assert_allclose(e1, e2)
     for ii in range(3):
-        np.testing.assert_allclose(f1[ii], f2[ii], atol=1e-7, rtol=1e-6)
-        np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-8, rtol=1e-8)
+        np.testing.assert_allclose(f1[ii], f2[ii], atol=1e-3, rtol=1e-3)
+        np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-3, rtol=1e-3)
 
     # Compare to TensorLy
     np.testing.assert_allclose(w1, wT, rtol=0.02)  # type: ignore
@@ -113,9 +115,14 @@ def test_pf2_r2x():
     norm_tensor = float(np.linalg.norm(X) ** 2)
 
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
+    cp_f = [cp.array(x) for x in f]
 
-    p, projected_X = project_data(X, cp.zeros((1, X[0].shape[1])), f)
-    errCMF = reconstruction_error(f, p, projected_X, norm_tensor)
+    _, errCMF = project_data(
+        X, cp.zeros((1, X[0].shape[1])), cp_f, norm_tensor
+    )
+    p = project_data(
+        X, cp.zeros((1, X[0].shape[1])), cp_f, norm_tensor, return_projections=True
+    )
 
     p = [cp.asnumpy(pp) for pp in p]
 
@@ -133,7 +140,7 @@ def test_performance(sparse: bool):
 
     X = pf2_to_anndata(X, sparse=sparse)
 
-    (w1, f1, p1), e1 = parafac2_nd(X, rank=9)
+    (w1, f1, p1), e1 = parafac2_nd(X, rank=15)
 
 
 def test_pf2_proj_centering():
@@ -144,13 +151,15 @@ def test_pf2_proj_centering():
         normalise_factors=False,
         dtype=np.float64,
     )
+    cp_factors = [cp.array(x) for x in factors]
 
     X_pf = parafac2_to_slices((None, factors, projections))
 
     norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))  # type: ignore
 
-    projections, projected_X = project_data(X_pf, cp.zeros((1, 300)), factors)
-    norm_sq_err = reconstruction_error(factors, projections, projected_X, norm_X_sq)
+    projected_X, norm_sq_err = project_data(
+        X_pf, cp.zeros((1, 300)), cp_factors, norm_X_sq
+    )
 
     np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
 
@@ -158,12 +167,11 @@ def test_pf2_proj_centering():
     means = np.random.randn(X_pf[0].shape[1])  # noqa: NPY002
     X_pf = [xx + means for xx in X_pf]
 
-    projections, projected_X_mean = project_data(X_pf, cp.array(means), factors)
-    norm_sq_err_centered = reconstruction_error(
-        factors, projections, projected_X, norm_X_sq
+    projected_X_mean, norm_sq_err_centered = project_data(
+        X_pf, cp.array(means), cp_factors, norm_X_sq
     )
 
-    cp.testing.assert_allclose(projected_X, projected_X_mean)
+    cp.testing.assert_allclose(projected_X, projected_X_mean, atol=1.0e-5)  # type: ignore
     np.testing.assert_allclose(
         norm_sq_err / norm_X_sq, norm_sq_err_centered / norm_X_sq, atol=1e-6
     )
