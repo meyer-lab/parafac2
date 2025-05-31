@@ -117,9 +117,7 @@ def test_pf2_r2x():
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
     cp_f = [cp.array(x) for x in f]
 
-    _, errCMF = project_data(
-        X, cp.zeros((1, X[0].shape[1])), cp_f, norm_tensor
-    )
+    _, errCMF = project_data(X, cp.zeros((1, X[0].shape[1])), cp_f, norm_tensor)
     p = project_data(
         X, cp.zeros((1, X[0].shape[1])), cp_f, norm_tensor, return_projections=True
     )

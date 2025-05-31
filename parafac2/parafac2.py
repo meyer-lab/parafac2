@@ -82,7 +82,6 @@ def parafac2_nd(
     beta_i_bar = 1.0
 
     factors, norm_tensor = parafac2_init(X_in, rank, random_state)
-    factors = [cp.array(f, dtype=cp.float32) for f in factors]
 
     factors_old = deepcopy(factors)
 
@@ -145,7 +144,9 @@ def parafac2_nd(
         X_list, means, factors, norm_tensor, return_projections=True
     )
 
+    # Move back to the CPU
     factors = [cp.asnumpy(f) for f in factors]
     projections = [cp.asnumpy(p) for p in projections]
 
+    # Standardize the results and return
     return standardize_pf2(factors, projections), R2X
