@@ -70,7 +70,7 @@ def anndata_to_list(X_in: anndata.AnnData) -> list[cp.ndarray | cupy_sparse.csr_
             X_list.append(cp.array(X_in.X[sgIndex == i], dtype=cp.float32))
         else:
             X_list.append(
-                cupy_sparse.csr_matrix(X_in.X[sgIndex == i], dtype=cp.float32)
+                cupy_sparse.csr_matrix(X_in.X[sgIndex == i], dtype=cp.float32)  # type: ignore
             )
 
     return X_list
@@ -88,9 +88,7 @@ def project_data(
 
     norm_sq_err = norm_X_sq
 
-    if return_projections:
-        projections: list[cp.ndarray] = []
-
+    projections: list[cp.ndarray] = []
     projected_X = cp.empty((A.shape[0], B.shape[0], C.shape[0]), dtype=cp.float32)
     means = cp.array(means, dtype=cp.float32)
 

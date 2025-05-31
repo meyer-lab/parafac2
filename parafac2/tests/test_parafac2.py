@@ -51,14 +51,11 @@ def test_init_reprod(sparse: bool):
     means = np.array(X_ann.var["means"])
     cp_f1 = [cp.array(x) for x in f1]
     cp_f2 = [cp.array(x) for x in f2]
-    proj1, proj_X1 = project_data(X_reprod, means, cp_f1)
-    proj2, proj_X2 = project_data(X_reprod, means, cp_f2)
+    proj_X1, _ = project_data(X_reprod, means, cp_f1, 1.0)
+    proj_X2, _ = project_data(X_reprod, means, cp_f2, 1.0)
 
     # Compare both seeds
     cp.testing.assert_array_equal(proj_X1, proj_X2)
-
-    for ii in range(len(proj1)):
-        cp.testing.assert_array_equal(proj1[ii], proj2[ii])
 
 
 @pytest.mark.parametrize("sparse", [False, True])
