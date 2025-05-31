@@ -54,6 +54,8 @@ def parafac2_init(
     # Calculate covariance matrix while preserving sparsity
     cov_matrix = cp.zeros((n_genes, n_genes), dtype=cp.float64)
     axis0_sum = cp.zeros(n_genes, dtype=cp.float64)
+    total_rows = 0
+
     for X_cond in X_in:
         if isinstance(X_cond, cp.ndarray):
             cov_matrix += X_cond.T @ X_cond
@@ -61,10 +63,11 @@ def parafac2_init(
             cov_matrix += (X_cond.T @ X_cond).toarray()
 
         axis0_sum += X_cond.sum(axis=0).flatten()
+        total_rows += X_cond.shape[0]
 
     cov_matrix -= cp.outer(means, axis0_sum)
     cov_matrix -= cp.outer(axis0_sum, means)
-    cov_matrix += n_cond * X_cond.shape[0] * cp.outer(means, means)
+    cov_matrix += total_rows * cp.outer(means, means)
 
     # Calculate the norm using the covariance matrix
     norm_tensor = cp.trace(cov_matrix)
