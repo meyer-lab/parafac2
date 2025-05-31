@@ -2,7 +2,6 @@ import anndata
 import numpy as np
 from scipy.sparse import csr_array, issparse
 from scipy.special import xlogy
-from sklearn.preprocessing import scale
 
 
 def prepare_dataset(
@@ -124,4 +123,6 @@ def get_deviance(data: csr_array) -> np.ndarray:
     residuals = np.sqrt(deviance) * np.sign(y_ij - mu_ij)
 
     # z-score
-    return scale(residuals)
+    residuals -= np.mean(residuals, axis=0)
+    residuals /= np.std(residuals, axis=0)
+    return residuals

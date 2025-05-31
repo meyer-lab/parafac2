@@ -5,8 +5,8 @@ from copy import deepcopy
 import anndata
 import cupy as cp
 import numpy as np
-from scipy.sparse.linalg import norm
-from sklearn.utils.extmath import randomized_svd
+from cupyx.scipy import sparse as cupy_sparse
+from cupyx.scipy.sparse.linalg import eigsh
 from tqdm import tqdm
 
 from .utils import (
@@ -37,24 +37,50 @@ def store_pf2(
 
 
 def parafac2_init(
-    X_in: anndata.AnnData,
+    X_in: list[cp.ndarray | cupy_sparse.csr_matrix],
+    means: cp.ndarray,
     rank: int,
     random_state: int | None = None,
-) -> tuple[list[np.ndarray], float]:
+) -> tuple[list[cp.ndarray], float]:
     # Index dataset to a list of conditions
-    n_cond = len(X_in.obs["condition_unique_idxs"].cat.categories)
-    means = X_in.var["means"].to_numpy()
+    n_cond = len(X_in)
+    n_genes: int = X_in[0].shape[1]
+    means = means.ravel()
 
-    lmult = X_in.X @ means
-    if isinstance(X_in.X, np.ndarray):
-        norm_tensor = float(np.linalg.norm(X_in.X) ** 2.0 - 2 * np.sum(lmult))
-    else:
-        norm_tensor = float(norm(X_in.X) ** 2.0 - 2 * np.sum(lmult))
+    # Initialize the random state for eigsh
+    if random_state is not None:
+        cp.random.seed(random_state)
 
-    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state)  # type: ignore
+    # Calculate covariance matrix while preserving sparsity
+    cov_matrix = cp.zeros((n_genes, n_genes), dtype=cp.float64)
+    axis0_sum = cp.zeros(n_genes, dtype=cp.float64)
+    total_rows = 0
 
-    factors = [np.ones((n_cond, rank)), np.eye(rank), C.T]
-    return factors, norm_tensor
+    for X_cond in X_in:
+        if isinstance(X_cond, cp.ndarray):
+            cov_matrix += X_cond.T @ X_cond
+        else:
+            cov_matrix += (X_cond.T @ X_cond).toarray()
+
+        axis0_sum += X_cond.sum(axis=0).flatten()
+        total_rows += X_cond.shape[0]
+
+    cov_matrix -= cp.outer(means, axis0_sum)
+    cov_matrix -= cp.outer(axis0_sum, means)
+    cov_matrix += total_rows * cp.outer(means, means)
+
+    # Calculate the norm using the covariance matrix
+    norm_tensor = cp.trace(cov_matrix)
+
+    # Compute eigenvectors of the covariance matrix
+    eigenvals, eigenvecs = eigsh(cov_matrix, k=rank)
+    # Sort in descending order of eigenvalues
+    idx = cp.argsort(eigenvals)[::-1]
+    eigenvecs = eigenvecs[:, idx]
+
+    # Take the top 'rank' eigenvectors as initial C
+    factors = [cp.ones((n_cond, rank)), cp.eye(rank), eigenvecs[:, :rank]]
+    return factors, float(cp.asnumpy(norm_tensor))
 
 
 def parafac2_nd(
@@ -75,22 +101,21 @@ def parafac2_nd(
     beta_i = 0.05
     beta_i_bar = 1.0
 
-    factors, norm_tensor = parafac2_init(X_in, rank, random_state)
-    factors = [cp.array(f) for f in factors]
-
-    factors_old = deepcopy(factors)
-
     X_list = anndata_to_list(X_in)
 
     if "means" in X_in.var:
-        means = np.array(X_in.var["means"].to_numpy())
+        means = cp.array(X_in.var["means"].to_numpy())
     else:
-        means = np.zeros((1, factors[2].shape[0]))
+        means = cp.zeros((1, X_in.shape[1]))
+
+    factors, norm_tensor = parafac2_init(X_list, means, rank, random_state)
+
+    factors_old = deepcopy(factors)
 
     projected_X, err = project_data(X_list, means, factors, norm_tensor)
     errs = [err]
 
-    tq = tqdm(range(n_iter_max), disable=(not verbose), delay=1.0)
+    tq = tqdm(range(n_iter_max), disable=(not verbose), delay=0.5)
     for iteration in tq:
         jump = beta_i + 1.0
 
