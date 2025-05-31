@@ -82,6 +82,7 @@ def project_data(
 ) -> list[cp.ndarray] | tuple[cp.ndarray, float]:
     A, B, C = factors
     CtC = C.T @ C
+    assert CtC.dtype == cp.float64
 
     norm_sq_err = norm_X_sq
 
@@ -93,25 +94,27 @@ def project_data(
         if isinstance(mat, np.ndarray):
             mat = cp.array(mat, dtype=cp.float32)
 
-        lhs = (A[i] * C) @ B.T
+        lhs = cp.array((A[i] * C) @ B.T, dtype=cp.float32)
         U, _, Vh = cp.linalg.svd(mat @ lhs - means @ lhs, full_matrices=False)
         proj = U @ Vh
+        assert proj.dtype == cp.float32
 
         if return_projections:
             projections.append(proj)
         else:
             # Account for centering
             centering = cp.outer(cp.sum(proj, axis=0), means)
-            projected_X[i] = proj.T @ mat - centering
+            proj_slice = proj.T @ mat - centering
 
             # accumulate error
-            B_i = (proj @ B) * A[i]
+            B_i_inner = A[i][:, cp.newaxis] * (B.T @ B) * A[i]
 
             # trace of the multiplication products
-            norm_sq_err -= 2.0 * cp.trace(
-                A[i][:, cp.newaxis] * B.T @ projected_X[i] @ C
-            )
-            norm_sq_err += ((B_i.T @ B_i) * CtC).sum()
+            norm_sq_err -= 2.0 * cp.einsum("r,jr,jr->", A[i], B, proj_slice @ C)
+            norm_sq_err += (B_i_inner * CtC).sum()
+
+            # store projection
+            projected_X[i] = proj_slice
 
     if return_projections:
         return projections

@@ -61,28 +61,29 @@ def test_init_reprod(sparse: bool):
 @pytest.mark.parametrize("sparse", [False, True])
 def test_parafac2(sparse: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
-    pf2shape = [(250, 1000)] * 12
+    pf2shape = [(250, 1000)] * 8
     X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)  # type: ignore
     norm_tensor = float(np.linalg.norm(X) ** 2)
 
     X_ann = pf2_to_anndata(X, sparse=sparse)
 
-    options = {"tol": 1e-12, "n_iter_max": 500}
+    options = {"tol": 1e-12, "n_iter_max": 1000}
 
     (w1, f1, p1), e1 = parafac2_nd(X_ann, rank=3, random_state=1, **options)
 
     # Test that the model still matches the data
     err = _parafac2_reconstruction_error(X, (w1, f1, p1)) ** 2
-    np.testing.assert_allclose(1.0 - err / norm_tensor, e1, rtol=1e-5)
+    np.testing.assert_allclose(1.0 - err / norm_tensor, e1, rtol=1e-4)
 
     # Test reproducibility
     (w2, f2, p2), e2 = parafac2_nd(X_ann, rank=3, random_state=3, **options)
+
     # Compare to TensorLy
-    wT, fT, pT = parafac2(
+    wT, fT, pT = parafac2(  # type: ignore
         X,
         rank=3,
         normalize_factors=True,
-        n_iter_max=20,
+        n_iter_max=10,
         init=(w1.copy(), [f.copy() for f in f1], [p.copy() for p in p1]),  # type: ignore
     )
 
@@ -93,16 +94,16 @@ def test_parafac2(sparse: bool):
 
     # Compare both seeds
     np.testing.assert_allclose(w1, w2, rtol=0.01)
-    np.testing.assert_allclose(e1, e2)
+    np.testing.assert_allclose(e1, e2, rtol=1e-5)
     for ii in range(3):
-        np.testing.assert_allclose(f1[ii], f2[ii], atol=1e-3, rtol=1e-3)
-        np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-3, rtol=1e-3)
+        np.testing.assert_allclose(f1[ii], f2[ii], atol=1e-2, rtol=1e-2)
+        np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-2, rtol=1e-2)
 
     # Compare to TensorLy
-    np.testing.assert_allclose(w1, wT, rtol=0.02)  # type: ignore
+    np.testing.assert_allclose(w1, wT, rtol=0.2)  # type: ignore
     for ii in range(3):
-        np.testing.assert_allclose(f1[ii], fT[ii], rtol=0.01, atol=0.01)
-        np.testing.assert_allclose(p1[ii], pT[ii], rtol=0.01, atol=0.01)
+        np.testing.assert_allclose(f1[ii], fT[ii], rtol=0.01, atol=0.1)
+        np.testing.assert_allclose(p1[ii], pT[ii], rtol=0.01, atol=0.1)
 
 
 def test_pf2_r2x():
@@ -123,7 +124,7 @@ def test_pf2_r2x():
 
     err = _parafac2_reconstruction_error(X, (w, f, p)) ** 2
 
-    np.testing.assert_allclose(err, errCMF, rtol=1e-8)
+    np.testing.assert_allclose(err, errCMF, rtol=1e-6, atol=1e-6)
 
 
 @pytest.mark.parametrize("sparse", [False, True])

@@ -6,7 +6,6 @@ import anndata
 import cupy as cp
 import numpy as np
 from scipy.sparse.linalg import norm
-from sklearn.utils import resample
 from sklearn.utils.extmath import randomized_svd
 from tqdm import tqdm
 
@@ -52,12 +51,7 @@ def parafac2_init(
     else:
         norm_tensor = float(norm(X_in.X) ** 2.0 - 2 * np.sum(lmult))
 
-    if X_in.shape[0] > X_in.shape[1] * 10:
-        X_svd = resample(X_in.X, n_samples=X_in.shape[1] * 10)
-    else:
-        X_svd = X_in.X
-
-    _, _, C = randomized_svd(X_svd, rank, random_state=random_state)  # type: ignore
+    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state)  # type: ignore
 
     factors = [np.ones((n_cond, rank)), np.eye(rank), C.T]
     return factors, norm_tensor
@@ -82,6 +76,7 @@ def parafac2_nd(
     beta_i_bar = 1.0
 
     factors, norm_tensor = parafac2_init(X_in, rank, random_state)
+    factors = [cp.array(f) for f in factors]
 
     factors_old = deepcopy(factors)
 
@@ -95,7 +90,6 @@ def parafac2_nd(
     projected_X, err = project_data(X_list, means, factors, norm_tensor)
     errs = [err]
 
-    print("")
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=1.0)
     for iteration in tq:
         jump = beta_i + 1.0
