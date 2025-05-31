@@ -5,7 +5,6 @@ import tensorly as tl
 from cupyx.scipy import sparse as cupy_sparse
 from scipy.optimize import linear_sum_assignment
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
-from tensorly.tenalg.core_tenalg import unfolding_dot_khatri_rao
 
 
 def parafac(
@@ -13,10 +12,7 @@ def parafac(
     factors: list[cp.ndarray],
     n_iter_max: int = 3,
 ) -> list[cp.ndarray]:
-    """Decomposes a tensor into a set of factor matrices using the PARAFAC2 algorithm.
-    PARAFAC2 decomposes a tensor into a set of factor matrices, where one factor
-    matrix can vary across slices in one mode. This function implements the core
-    PARAFAC2 algorithm using alternating least squares.
+    """Decomposes a tensor into a set of factor matrices using the PARAFAC algorithm.
     Args:
         tensor (numpy.ndarray): The tensor to decompose.
         factors (list of numpy.ndarray): Initial guess for the factor matrices.
@@ -33,8 +29,6 @@ def parafac(
     """
     rank = factors[0].shape[1]
 
-    tl.set_backend("cupy")
-
     for _ in range(n_iter_max):
         for mode in range(tensor.ndim):
             pinv = cp.ones((rank, rank))
@@ -42,13 +36,22 @@ def parafac(
                 if i != mode:
                     pinv *= factor.T @ factor
 
-            mttkrp = unfolding_dot_khatri_rao(tensor, (None, factors), mode)
+            # With einsum operations:
+            if mode == 0:
+                mttkrp = cp.einsum("ijr,jr->ir", tensor @ factors[2], factors[1])
+            elif mode == 1:
+                mttkrp = cp.einsum("ijr,ir->jr", tensor @ factors[2], factors[0])
+            else:  # mode == 2
+                mttkrp = cp.einsum("ijk,ir,jr->kr", tensor, factors[0], factors[1])
+
             factors[mode] = cp.linalg.solve(pinv.T, mttkrp.T).T
 
+    tl.set_backend("cupy")
     weights, factors = cp_normalize((None, factors))
-    factors[0] *= weights[None, :]
-
     tl.set_backend("numpy")
+
+    # apply weights to first factor matrix
+    factors[0] *= weights[None, :]
 
     return factors
 
@@ -61,61 +64,62 @@ def anndata_to_list(X_in: anndata.AnnData) -> list[cp.ndarray | cupy_sparse.csr_
     for i in range(np.amax(sgIndex) + 1):
         # Prepare CuPy matrix
         if isinstance(X_in.X, np.ndarray):
-            X_list.append(cp.array(X_in.X[sgIndex == i]))
+            X_list.append(cp.array(X_in.X[sgIndex == i], dtype=cp.float32))
         else:
-            X_list.append(cupy_sparse.csr_matrix(X_in.X[sgIndex == i]))
+            X_list.append(
+                cupy_sparse.csr_matrix(X_in.X[sgIndex == i], dtype=cp.float32)  # type: ignore
+            )
 
     return X_list
 
 
 def project_data(
-    X_list: list[cp.ndarray | np.ndarray], means: np.ndarray, factors: list[np.ndarray]
-) -> tuple[list[np.ndarray], np.ndarray]:
-    A, B, C = factors
-
-    projections: list[np.ndarray] = []
-    projected_X = cp.empty((A.shape[0], B.shape[0], C.shape[0]))
-    means = cp.array(means)
-
-    for i, mat in enumerate(X_list):
-        if isinstance(mat, np.ndarray):
-            mat = cp.array(mat)
-
-        lhs = cp.array((A[i] * C) @ B.T, copy=False)
-        U, _, Vh = cp.linalg.svd(mat @ lhs - means @ lhs, full_matrices=False)
-        proj = U @ Vh
-
-        projections.append(cp.asnumpy(proj))
-
-        # Account for centering
-        centering = cp.outer(cp.sum(proj, axis=0), means)
-        projected_X[i, :, :] = proj.T @ mat - centering
-
-    return projections, projected_X
-
-
-def reconstruction_error(
-    factors: list[np.ndarray],
-    projections: list[np.ndarray],
-    projected_X: np.ndarray,
+    X_list: list[cp.ndarray | np.ndarray],
+    means: np.ndarray,
+    factors: list[cp.ndarray],
     norm_X_sq: float,
-) -> float:
-    """Calculate the reconstruction error from the factors and projected data."""
+    return_projections=False,
+) -> list[cp.ndarray] | tuple[cp.ndarray, float]:
     A, B, C = factors
     CtC = C.T @ C
+    assert CtC.dtype == cp.float64
 
     norm_sq_err = norm_X_sq
 
-    for i, proj in enumerate(projections):
-        B_i = (proj @ B) * A[i]
+    projections: list[cp.ndarray] = []
+    projected_X = cp.empty((A.shape[0], B.shape[0], C.shape[0]), dtype=cp.float32)
+    means = cp.array(means, dtype=cp.float32)
 
-        # trace of the multiplication products
-        norm_sq_err -= 2.0 * np.trace(
-            A[i][:, np.newaxis] * B.T @ cp.asnumpy(projected_X[i]) @ C
-        )
-        norm_sq_err += ((B_i.T @ B_i) * CtC).sum()
+    for i, mat in enumerate(X_list):
+        if isinstance(mat, np.ndarray):
+            mat = cp.array(mat, dtype=cp.float32)
 
-    return norm_sq_err
+        lhs = cp.array((A[i] * C) @ B.T, dtype=cp.float32)
+        U, _, Vh = cp.linalg.svd(mat @ lhs - means @ lhs, full_matrices=False)
+        proj = U @ Vh
+        assert proj.dtype == cp.float32
+
+        if return_projections:
+            projections.append(proj)
+        else:
+            # Account for centering
+            centering = cp.outer(cp.sum(proj, axis=0), means)
+            proj_slice = proj.T @ mat - centering
+
+            # accumulate error
+            B_i_inner = A[i][:, cp.newaxis] * (B.T @ B) * A[i]
+
+            # trace of the multiplication products
+            norm_sq_err -= 2.0 * cp.einsum("r,jr,jr->", A[i], B, proj_slice @ C)
+            norm_sq_err += (B_i_inner * CtC).sum()
+
+            # store projection
+            projected_X[i] = proj_slice
+
+    if return_projections:
+        return projections
+
+    return projected_X, float(cp.asnumpy(norm_sq_err))
 
 
 def standardize_pf2(

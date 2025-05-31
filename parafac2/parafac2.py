@@ -6,7 +6,6 @@ import anndata
 import cupy as cp
 import numpy as np
 from scipy.sparse.linalg import norm
-from sklearn.utils import resample
 from sklearn.utils.extmath import randomized_svd
 from tqdm import tqdm
 
@@ -14,7 +13,6 @@ from .utils import (
     anndata_to_list,
     parafac,
     project_data,
-    reconstruction_error,
     standardize_pf2,
 )
 
@@ -53,14 +51,7 @@ def parafac2_init(
     else:
         norm_tensor = float(norm(X_in.X) ** 2.0 - 2 * np.sum(lmult))
 
-    if X_in.shape[0] > X_in.shape[1] * 10:
-        X_svd = resample(
-            X_in.X, n_samples=X_in.shape[1] * 10, random_state=random_state
-        )
-    else:
-        X_svd = X_in.X
-
-    _, _, C = randomized_svd(X_svd, rank, random_state=random_state)  # type: ignore
+    _, _, C = randomized_svd(X_in.X, rank, random_state=random_state)  # type: ignore
 
     factors = [np.ones((n_cond, rank)), np.eye(rank), C.T]
     return factors, norm_tensor
@@ -72,7 +63,7 @@ def parafac2_nd(
     n_iter_max: int = 100,
     tol: float = 1e-6,
     random_state: int | None = None,
-    callback: Callable[[int, float, list, list], None] | None = None,
+    callback: Callable[[int, float, list], None] | None = None,
 ) -> tuple[tuple, float]:
     r"""The same interface as regular PARAFAC2."""
     # Verbose if this is not an automated build
@@ -85,6 +76,8 @@ def parafac2_nd(
     beta_i_bar = 1.0
 
     factors, norm_tensor = parafac2_init(X_in, rank, random_state)
+    factors = [cp.array(f) for f in factors]
+
     factors_old = deepcopy(factors)
 
     X_list = anndata_to_list(X_in)
@@ -94,11 +87,9 @@ def parafac2_nd(
     else:
         means = np.zeros((1, factors[2].shape[0]))
 
-    projections, projected_X = project_data(X_list, means, factors)
-    err = reconstruction_error(factors, projections, projected_X, norm_tensor)
+    projected_X, err = project_data(X_list, means, factors, norm_tensor)
     errs = [err]
 
-    print("")
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=1.0)
     for iteration in tq:
         jump = beta_i + 1.0
@@ -108,14 +99,10 @@ def parafac2_nd(
             factors_old[ii] + (factors[ii] - factors_old[ii]) * jump for ii in range(3)
         ]
 
-        projections_ls, projected_X_ls = project_data(X_list, means, factors)
-        err_ls = reconstruction_error(
-            factors_ls, projections_ls, projected_X_ls, norm_tensor
-        )
+        projected_X_ls, err_ls = project_data(X_list, means, factors, norm_tensor)
 
         if err_ls < errs[-1] * norm_tensor:
             err = err_ls
-            projections = projections_ls
             projected_X = projected_X_ls
             factors = factors_ls
 
@@ -125,31 +112,34 @@ def parafac2_nd(
             beta_i_bar = beta_i
             beta_i = beta_i / eta
 
-            projections, projected_X = project_data(X_list, means, factors)
-            err = reconstruction_error(factors, projections, projected_X, norm_tensor)
+            projected_X, err = project_data(X_list, means, factors, norm_tensor)
 
         errs.append(err / norm_tensor)
 
         factors_old = deepcopy(factors)
-
-        factors = [cp.array(f) for f in factors]
-
         factors = parafac(
             projected_X,
             factors,
         )
-
-        factors = [cp.asnumpy(f) for f in factors]
 
         delta = errs[-2] - errs[-1]
         tq.set_postfix(
             error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, jump=jump, refresh=False
         )
         if callback is not None:
-            callback(iteration, errs[-1], factors, projections)
+            callback(iteration, errs[-1], factors)
 
         if delta < tol:
             break
 
     R2X = 1 - errs[-1]
+    projections = project_data(
+        X_list, means, factors, norm_tensor, return_projections=True
+    )
+
+    # Move back to the CPU
+    factors = [cp.asnumpy(f) for f in factors]
+    projections = [cp.asnumpy(p) for p in projections]
+
+    # Standardize the results and return
     return standardize_pf2(factors, projections), R2X
