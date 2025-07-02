@@ -79,7 +79,7 @@ def get_deviance(data: csr_array) -> np.ndarray:
     where y=0 or n-y=0, and ensures the final deviance values are non-negative
     before taking the square root.
     """
-    # check that there are no duplicate entries in the sparse matrix
+    # merge duplicate entries in the sparse matrix by summing their values
     data.sum_duplicates()
     data.eliminate_zeros()
 
