@@ -83,8 +83,8 @@ def get_deviance(data: csr_array) -> np.ndarray:
     data.sum_duplicates()
     data.eliminate_zeros()
 
-    # counts per gene
-    pi_j = data.sum(axis=0)
+    # proportion of total counts per gene
+    pi_j = data.sum(axis=0) / data.sum()
 
     # Convert to dense - consider memory implications
     y_ij = data.toarray()
