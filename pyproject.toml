@@ -15,8 +15,9 @@ dependencies = [
     "anndata>=0.12",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
+    "ruff>=0.14.1",
     "pytest>=8.4",
     "pytest-cov>=6.1",
     "pyright>=1.1.380",
@@ -47,3 +48,5 @@ select = [
     # type checking
     "TC",
 ]
+
+
