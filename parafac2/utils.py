@@ -1,57 +1,36 @@
 import anndata
 import cupy as cp
 import numpy as np
-import tensorly as tl
 from cupyx.scipy import sparse as cupy_sparse
 from scipy.optimize import linear_sum_assignment
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 
 
-def parafac(
-    tensor: cp.ndarray,
+def parafac_update(
     factors: list[cp.ndarray],
-    n_iter_max: int = 3,
-) -> list[cp.ndarray]:
-    """Decomposes a tensor into a set of factor matrices using the PARAFAC algorithm.
-    Args:
-        tensor (numpy.ndarray): The tensor to decompose.
-        factors (list of numpy.ndarray): Initial guess for the factor matrices.
-            The length of the list must be equal to the number of modes in the tensor.
-            Each element of the list is a numpy.ndarray of shape (size_mode_i, rank),
-            where size_mode_i is the size of the tensor along mode i, and rank is
-            the desired rank of the decomposition.
-        n_iter_max (int, optional): Maximum number of iterations for the algorithm.
-            Defaults to 3.
-    Returns:
-        list of numpy.ndarray: A list containing the factor matrices.
-            The order of the factor matrices corresponds to the modes of the input
-            tensor. The first factor matrix is scaled by the weights.
+    mttkrps: list[cp.ndarray],
+):
+    """
+    Perform sequential PARAFAC updates for all modes using pre-computed MTTKRPs.
+    This corresponds to Option 2: Sequential with reuse.
     """
     rank = factors[0].shape[1]
+    for mode in range(len(factors)):
+        # Recompute Gram matrix product using current factors
+        v = cp.ones((rank, rank))
+        for i, factor in enumerate(factors):
+            if i != mode:
+                v *= factor.T @ factor
 
-    for _ in range(n_iter_max):
-        for mode in range(tensor.ndim):
-            pinv = cp.ones((rank, rank))
-            for i, factor in enumerate(factors):
-                if i != mode:
-                    pinv *= factor.T @ factor
+        # Update the factor for the current mode
+        factors[mode] = cp.linalg.solve(v.T, mttkrps[mode].T).T
 
-            # With einsum operations:
-            if mode == 0:
-                mttkrp = cp.einsum("ijr,jr->ir", tensor @ factors[2], factors[1])
-            elif mode == 1:
-                mttkrp = cp.einsum("ijr,ir->jr", tensor @ factors[2], factors[0])
-            else:  # mode == 2
-                mttkrp = cp.einsum("ijk,ir,jr->kr", tensor, factors[0], factors[1])
-
-            factors[mode] = cp.linalg.solve(pinv.T, mttkrp.T).T
-
-    tl.set_backend("cupy")
-    weights, factors = cp_normalize((None, factors))
-    tl.set_backend("numpy")
-
-    # apply weights to first factor matrix
-    factors[0] *= weights[None, :]
+    # Normalize factors 1 and 2, absorbing the scale into factor 0
+    for mode in [1, 2]:
+        norms = cp.linalg.norm(factors[mode], axis=0)
+        norms = cp.where(norms == 0, 1.0, norms)
+        factors[mode] /= norms
+        factors[0] *= norms
 
     return factors
 
@@ -79,7 +58,7 @@ def project_data(
     factors: list[cp.ndarray],
     norm_X_sq: float,
     return_projections=False,
-) -> list[cp.ndarray] | tuple[cp.ndarray, float]:
+) -> list[cp.ndarray] | tuple[list[cp.ndarray], float]:
     A, B, C = factors
     CtC = C.T @ C
     assert CtC.dtype == cp.float64
@@ -87,8 +66,16 @@ def project_data(
     norm_sq_err = norm_X_sq
 
     projections: list[cp.ndarray] = []
-    projected_X = cp.empty((A.shape[0], B.shape[0], C.shape[0]), dtype=cp.float32)
     means = cp.array(means, dtype=cp.float32)
+
+    rank = B.shape[0]
+    n_cond = len(X_list)
+    n_genes = C.shape[0]
+    mttkrps: list[cp.ndarray] = [
+        cp.zeros((n_cond, rank), dtype=cp.float32),
+        cp.zeros((rank, rank), dtype=cp.float32),
+        cp.zeros((n_genes, rank), dtype=cp.float32),
+    ]
 
     for i, mat in enumerate(X_list):
         if isinstance(mat, np.ndarray):
@@ -113,13 +100,15 @@ def project_data(
             norm_sq_err -= 2.0 * cp.einsum("r,jr,jr->", A[i], B, proj_slice @ C)
             norm_sq_err += (B_i_inner * CtC).sum()
 
-            # store projection
-            projected_X[i] = proj_slice
+            # Accumulate MTTKRP contributions
+            mttkrps[0][i] = cp.sum((proj_slice @ C) * B, axis=0)
+            mttkrps[1] += (proj_slice @ C) * A[i]
+            mttkrps[2] += (proj_slice.T @ B) * A[i]
 
     if return_projections:
         return projections
 
-    return projected_X, float(cp.asnumpy(norm_sq_err))
+    return mttkrps, float(cp.asnumpy(norm_sq_err))
 
 
 def standardize_pf2(

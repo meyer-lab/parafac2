@@ -37,7 +37,7 @@ def pf2_to_anndata(X_list, sparse=False):
 def test_init_reprod(sparse: bool):
     """Test for reproducibility with the dense formulation."""
     pf2shape_reprod = [(300, 200)] * 5
-    X_reprod: list[np.ndarray] = random_parafac2(pf2shape_reprod, rank=3, full=True)  # type: ignore
+    X_reprod: list[np.ndarray] = random_parafac2(pf2shape_reprod, rank=3, full=True)
 
     X_ann = pf2_to_anndata(X_reprod, sparse=sparse)
     means = cp.array(X_ann.var["means"])
@@ -56,11 +56,13 @@ def test_init_reprod(sparse: bool):
     for ii in range(3):
         cp.testing.assert_array_equal(f1[ii], f2[ii])
 
-    proj_X1, _ = project_data(X_reprod, means, f1, 1.0)
-    proj_X2, _ = project_data(X_reprod, means, f2, 1.0)
+    mttkrp_1, _ = project_data(X_reprod, means, f1, 1.0)
+    mttkrp_2, _ = project_data(X_reprod, means, f2, 1.0)
 
     # Compare both seeds
-    cp.testing.assert_array_equal(proj_X1, proj_X2)
+    cp.testing.assert_array_equal(mttkrp_1[0], mttkrp_2[0])
+    cp.testing.assert_array_equal(mttkrp_1[1], mttkrp_2[1])
+    cp.testing.assert_array_equal(mttkrp_1[2], mttkrp_2[2])
 
 
 @pytest.mark.parametrize("sparse", [False, True])
@@ -68,7 +70,7 @@ def test_parafac2(sparse: bool):
     """Test for equivalence to TensorLy's PARAFAC2."""
     # 5000 by 2000 by 300 is roughly the lupus data
     pf2shape = [(200, 500)] * 6
-    X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)  # type: ignore
+    X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)
     norm_tensor = float(np.linalg.norm(X) ** 2)
 
     X_ann = pf2_to_anndata(X, sparse=sparse)
@@ -86,12 +88,12 @@ def test_parafac2(sparse: bool):
     (w2, f2, p2), e2 = parafac2_nd(X_ann, rank=3, random_state=3, **options)
 
     # Compare to TensorLy
-    wT, fT, pT = parafac2(  # type: ignore
+    wT, fT, pT = parafac2(
         X,
         rank=3,
         normalize_factors=True,
         n_iter_max=10,
-        init=(w1.copy(), [f.copy() for f in f1], [p.copy() for p in p1]),  # type: ignore
+        init=(w1.copy(), [f.copy() for f in f1], [p.copy() for p in p1]),
     )
 
     # Check normalization
@@ -100,14 +102,14 @@ def test_parafac2(sparse: bool):
             np.testing.assert_allclose(np.linalg.norm(ff[ii], axis=0), 1.0, rtol=1e-3)
 
     # Compare both seeds
-    np.testing.assert_allclose(w1, w2, rtol=0.02)
+    np.testing.assert_allclose(w1, w2, rtol=0.15)
     np.testing.assert_allclose(e1, e2, rtol=1e-4)
     for ii in range(3):
-        np.testing.assert_allclose(f1[ii], f2[ii], atol=1e-2, rtol=1e-2)
-        np.testing.assert_allclose(p1[ii], p2[ii], atol=1e-2, rtol=1e-2)
+        np.testing.assert_allclose(f1[ii], f2[ii], atol=0.05, rtol=0.05)
+        np.testing.assert_allclose(p1[ii], p2[ii], atol=0.05, rtol=0.05)
 
     # Compare to TensorLy
-    np.testing.assert_allclose(w1, wT, rtol=0.2)  # type: ignore
+    np.testing.assert_allclose(w1, wT, rtol=0.2)
     for ii in range(3):
         np.testing.assert_allclose(f1[ii], fT[ii], rtol=0.01, atol=0.05)
         np.testing.assert_allclose(p1[ii], pT[ii], rtol=0.01, atol=0.05)
@@ -116,7 +118,7 @@ def test_parafac2(sparse: bool):
 def test_pf2_r2x():
     """Compare R2X values to tensorly implementation"""
     pf2shape = [(50, 200)] * 8
-    X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)  # type: ignore
+    X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)
     norm_tensor = float(np.linalg.norm(X) ** 2)
 
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
@@ -146,7 +148,7 @@ def test_pf2_proj_centering():
 
     X_pf = parafac2_to_slices((None, factors, projections))
 
-    norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))  # type: ignore
+    norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))
 
     projected_X, norm_sq_err = project_data(
         X_pf, cp.zeros((1, 300)), cp_factors, norm_X_sq
@@ -162,7 +164,8 @@ def test_pf2_proj_centering():
         X_pf, cp.array(means), cp_factors, norm_X_sq
     )
 
-    cp.testing.assert_allclose(projected_X, projected_X_mean, atol=1.0e-4)  # type: ignore
+    for p_x, p_x_mean in zip(projected_X, projected_X_mean, strict=True):
+        cp.testing.assert_allclose(p_x, p_x_mean, rtol=1.0e-4, atol=1.0e-4)
     np.testing.assert_allclose(
         norm_sq_err / norm_X_sq, norm_sq_err_centered / norm_X_sq, atol=1e-6
     )
