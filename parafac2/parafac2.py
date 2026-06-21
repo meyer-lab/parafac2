@@ -111,8 +111,6 @@ def parafac2_nd(
 
     factors, norm_tensor = parafac2_init(X_list, means, rank, random_state)
 
-    factors_old = deepcopy(factors)
-
     mttkrps, err = project_data(X_list, means, factors, norm_tensor)
     errs = [err]
 
@@ -121,19 +119,22 @@ def parafac2_nd(
         jump = beta_i + 1.0
 
         factors_old = deepcopy(factors)
-        factors = parafac_update(
-            factors,
-            mttkrps,
-        )
+
+        for mode in range(len(factors)):
+            factors = parafac_update(
+                factors,
+                mttkrps,
+                mode,
+            )
+            mttkrps, err = project_data(X_list, means, factors, norm_tensor)
 
         # Estimate error with line search
         factors_ls = [
             factors_old[ii] + (factors[ii] - factors_old[ii]) * jump for ii in range(3)
         ]
+        _, err_ls = project_data(X_list, means, factors_ls, norm_tensor)
 
-        mttkrps, err_ls = project_data(X_list, means, factors_ls, norm_tensor)
-
-        if err_ls < errs[-1] * norm_tensor:
+        if err_ls < err:
             err = err_ls
             factors = factors_ls
 
@@ -142,8 +143,6 @@ def parafac2_nd(
         else:
             beta_i_bar = beta_i
             beta_i = beta_i / eta
-
-            mttkrps, err = project_data(X_list, means, factors, norm_tensor)
 
         errs.append(err / norm_tensor)
 

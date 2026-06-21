@@ -9,28 +9,22 @@ from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 def parafac_update(
     factors: list[cp.ndarray],
     mttkrps: list[cp.ndarray],
+    mode: int,
 ):
     """
     Perform sequential PARAFAC updates for all modes using pre-computed MTTKRPs.
     This corresponds to Option 2: Sequential with reuse.
     """
     rank = factors[0].shape[1]
-    for mode in range(len(factors)):
-        # Recompute Gram matrix product using current factors
-        v = cp.ones((rank, rank))
-        for i, factor in enumerate(factors):
-            if i != mode:
-                v *= factor.T @ factor
 
-        # Update the factor for the current mode
-        factors[mode] = cp.linalg.solve(v.T, mttkrps[mode].T).T
+    # Compute Gram matrix product using current factors
+    v = cp.ones((rank, rank))
+    for i, factor in enumerate(factors):
+        if i != mode:
+            v *= factor.T @ factor
 
-    # Normalize factors 1 and 2, absorbing the scale into factor 0
-    for mode in [1, 2]:
-        norms = cp.linalg.norm(factors[mode], axis=0)
-        norms = cp.where(norms == 0, 1.0, norms)
-        factors[mode] /= norms
-        factors[0] *= norms
+    # Update the factor for the current mode
+    factors[mode] = cp.linalg.solve(v.T, mttkrps[mode].T).T
 
     return factors
 
