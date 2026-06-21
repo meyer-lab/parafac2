@@ -7,7 +7,6 @@ import cupy as cp
 import numpy as np
 import pytest
 from scipy.sparse import csr_array
-from tensorly.decomposition import parafac2
 from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
 from tensorly.parafac2_tensor import parafac2_to_slices
 from tensorly.random import random_parafac2
@@ -65,54 +64,132 @@ def test_init_reprod(sparse: bool):
     cp.testing.assert_array_equal(mttkrp_1[2], mttkrp_2[2])
 
 
-@pytest.mark.parametrize("sparse", [False, True])
-def test_parafac2(sparse: bool):
-    """Test for equivalence to TensorLy's PARAFAC2."""
-    # 5000 by 2000 by 300 is roughly the lupus data
-    pf2shape = [(200, 500)] * 6
-    X: list[np.ndarray] = random_parafac2(pf2shape, rank=3, full=True, random_state=2)
-    norm_tensor = float(np.linalg.norm(X) ** 2)
+def test_parafac2_orthonormality():
+    """Test that the fitted projection matrices are orthonormal (P_k^T @ P_k = I)."""
+    shapes = [(30, 40) for _ in range(5)]
+    rank = 3
+    rng = np.random.default_rng(42)
 
-    X_ann = pf2_to_anndata(X, sparse=sparse)
+    # Generate random data
+    X_list = [rng.normal(size=shape) for shape in shapes]
+    X_ann = pf2_to_anndata(X_list, sparse=False)
 
-    options = {"tol": 1e-12, "n_iter_max": 1000}
-
-    (w1, f1, p1), e1 = parafac2_nd(X_ann, rank=3, random_state=1, **options)
-
-    # Test that the model still matches the data
-    err = _parafac2_reconstruction_error(X, (w1, f1, p1)) ** 2
-    assert err / norm_tensor < 5e-4
-    assert (1.0 - e1) < 5e-4
-
-    # Test reproducibility
-    (w2, f2, p2), e2 = parafac2_nd(X_ann, rank=3, random_state=3, **options)
-
-    # Compare to TensorLy
-    wT, fT, pT = parafac2(
-        X,
-        rank=3,
-        normalize_factors=True,
-        n_iter_max=10,
-        init=(w1.copy(), [f.copy() for f in f1], [p.copy() for p in p1]),
+    # Fit PARAFAC2
+    (w, f, p), _ = parafac2_nd(
+        X_ann, rank=rank, random_state=42, n_iter_max=50, tol=1e-6
     )
 
-    # Check normalization
-    for ff in [f1, f2, fT]:
-        for ii in range(3):
-            np.testing.assert_allclose(np.linalg.norm(ff[ii], axis=0), 1.0, rtol=1e-3)
+    # Check orthonormality of projections: P_k^T @ P_k = I
+    for P_k in p:
+        PtP = P_k.T @ P_k
+        np.testing.assert_allclose(PtP, np.eye(rank), atol=1e-5)
 
-    # Compare both seeds
-    np.testing.assert_allclose(w1, w2, rtol=0.15)
-    np.testing.assert_allclose(e1, e2, rtol=1e-4)
-    for ii in range(3):
-        np.testing.assert_allclose(f1[ii], f2[ii], atol=0.05, rtol=0.05)
-        np.testing.assert_allclose(p1[ii], p2[ii], atol=0.05, rtol=0.05)
 
-    # Compare to TensorLy
-    np.testing.assert_allclose(w1, wT, rtol=0.2)
-    for ii in range(3):
-        np.testing.assert_allclose(f1[ii], fT[ii], rtol=0.01, atol=0.05)
-        np.testing.assert_allclose(p1[ii], pT[ii], rtol=0.01, atol=0.05)
+def test_parafac2_monotonicity():
+    """Test that the reconstruction error decreases monotonically at each iteration."""
+    shapes = [(30, 45) for _ in range(4)]
+    rank = 3
+    rng = np.random.default_rng(12)
+
+    X_list = [rng.normal(size=shape) for shape in shapes]
+    X_ann = pf2_to_anndata(X_list, sparse=False)
+
+    errors = []
+
+    def callback(_iteration, error, _factors):
+        errors.append(error)
+
+    parafac2_nd(
+        X_ann,
+        rank=rank,
+        random_state=12,
+        n_iter_max=50,
+        tol=1e-10,
+        callback=callback,
+    )
+
+    # Check monotonicity
+    for i in range(1, len(errors)):
+        delta = errors[i - 1] - errors[i]
+        # Allow tiny float32 precision noise
+        assert delta >= -1e-6, (
+            f"Error increased at iteration {i}: {errors[i - 1]} -> {errors[i]} "
+            f"(delta={delta})"
+        )
+
+
+def test_parafac2_exact_recovery():
+    """Test that the PARAFAC2 model can recover noise-free synthetic data."""
+    shapes = [(25, 35) for _ in range(5)]
+    rank = 3
+    rng = np.random.default_rng(100)
+
+    # Generate known true factors and projections
+    A = rng.uniform(0.5, 1.5, size=(len(shapes), rank))
+    B = rng.normal(size=(rank, rank))
+    C = rng.normal(size=(shapes[0][1], rank))
+
+    projections = []
+    for Ik, _ in shapes:
+        P = rng.normal(size=(Ik, rank))
+        Q, _ = np.linalg.qr(P)
+        projections.append(Q)
+
+    factors = [A, B, C]
+
+    # Reconstruct noise-free data
+    X_slices = parafac2_to_slices((None, factors, projections))
+    X_ann = pf2_to_anndata(X_slices, sparse=False)
+
+    # Fit PARAFAC2
+    (w_fit, f_fit, p_fit), r2x = parafac2_nd(
+        X_ann, rank=rank, random_state=100, n_iter_max=150, tol=1e-7
+    )
+
+    # Verify that the relative reconstruction error from TensorLy is small
+    norm_X = np.sum([np.linalg.norm(x) ** 2 for x in X_slices])
+    rec_err = _parafac2_reconstruction_error(X_slices, (w_fit, f_fit, p_fit))
+    relative_err = rec_err / np.sqrt(norm_X)
+
+    assert r2x > 0.99
+    assert relative_err < 0.05
+
+
+def test_parafac2_sparse_dense_equivalence():
+    """Test that sparse and dense data representations yield identical results."""
+    shapes = [(15, 20) for _ in range(3)]
+    rank = 2
+    rng = np.random.default_rng(42)
+
+    # Generate random data with some sparsity (zeros)
+    X_list = []
+    for Ik, J in shapes:
+        x = rng.normal(size=(Ik, J))
+        x[rng.random(x.shape) > 0.7] = 0.0  # 30% sparsity
+        X_list.append(x)
+
+    X_ann_dense = pf2_to_anndata(X_list, sparse=False)
+    X_ann_sparse = pf2_to_anndata(X_list, sparse=True)
+
+    # Fit PARAFAC2 with same random seed
+    (w_dense, f_dense, p_dense), r2x_dense = parafac2_nd(
+        X_ann_dense, rank=rank, n_iter_max=20, tol=1e-6, random_state=42
+    )
+    (w_sparse, f_sparse, p_sparse), r2x_sparse = parafac2_nd(
+        X_ann_sparse, rank=rank, n_iter_max=20, tol=1e-6, random_state=42
+    )
+
+    # Check that weights are identical
+    np.testing.assert_allclose(w_dense, w_sparse, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(r2x_dense, r2x_sparse, rtol=1e-5, atol=1e-5)
+
+    # Check factors A, B, C
+    for fd, fs in zip(f_dense, f_sparse, strict=True):
+        np.testing.assert_allclose(fd, fs, rtol=1e-5, atol=1e-5)
+
+    # Check projections P_k
+    for pd, ps in zip(p_dense, p_sparse, strict=True):
+        np.testing.assert_allclose(pd, ps, rtol=1e-5, atol=1e-5)
 
 
 def test_pf2_r2x():

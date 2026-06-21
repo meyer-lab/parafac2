@@ -157,13 +157,12 @@ def parafac2_nd(
             break
 
     R2X = 1 - errs[-1]
-    projections = project_data(
+    projections: list[np.ndarray] = project_data(
         X_list, means, factors, norm_tensor, return_projections=True
     )
 
     # Move back to the CPU
     factors = [cp.asnumpy(f) for f in factors]
-    projections = [cp.asnumpy(p) for p in projections]
 
     # Standardize the results and return
     return standardize_pf2(factors, projections), R2X

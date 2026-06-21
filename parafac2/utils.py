@@ -1,3 +1,6 @@
+from collections.abc import Sequence
+from typing import Literal, cast, overload
+
 import anndata
 import cupy as cp
 import numpy as np
@@ -31,13 +34,13 @@ def parafac_update(
 
 def anndata_to_list(X_in: anndata.AnnData) -> list[cp.ndarray | cupy_sparse.csr_matrix]:
     # Index dataset to a list of conditions
-    sgIndex = X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
+    sgIndex = cast("np.ndarray", X_in.obs["condition_unique_idxs"].to_numpy(dtype=int))
 
     X_list = []
     for i in range(np.amax(sgIndex) + 1):
         # Prepare CuPy matrix
         if isinstance(X_in.X, np.ndarray):
-            X_list.append(cp.array(X_in.X[sgIndex == i], dtype=cp.float32))
+            X_list.append(cp.array(X_in.X[sgIndex == i], dtype=cp.float32))  # type: ignore
         else:
             X_list.append(
                 cupy_sparse.csr_matrix(X_in.X[sgIndex == i], dtype=cp.float32)  # type: ignore
@@ -46,20 +49,40 @@ def anndata_to_list(X_in: anndata.AnnData) -> list[cp.ndarray | cupy_sparse.csr_
     return X_list
 
 
+@overload
 def project_data(
-    X_list: list[cp.ndarray | np.ndarray],
+    X_list: Sequence[cp.ndarray | np.ndarray | cupy_sparse.csr_matrix],
     means: cp.ndarray,
     factors: list[cp.ndarray],
     norm_X_sq: float,
-    return_projections=False,
-) -> list[cp.ndarray] | tuple[list[cp.ndarray], float]:
+    return_projections: Literal[True],
+) -> list[np.ndarray]: ...
+
+
+@overload
+def project_data(
+    X_list: Sequence[cp.ndarray | np.ndarray | cupy_sparse.csr_matrix],
+    means: cp.ndarray,
+    factors: list[cp.ndarray],
+    norm_X_sq: float,
+    return_projections: Literal[False] = False,
+) -> tuple[list[cp.ndarray], float]: ...
+
+
+def project_data(
+    X_list: Sequence[cp.ndarray | np.ndarray | cupy_sparse.csr_matrix],
+    means: cp.ndarray,
+    factors: list[cp.ndarray],
+    norm_X_sq: float,
+    return_projections: bool = False,
+) -> list[np.ndarray] | tuple[list[cp.ndarray], float]:
     A, B, C = factors
     CtC = C.T @ C
     assert CtC.dtype == cp.float64
 
     norm_sq_err = norm_X_sq
 
-    projections: list[cp.ndarray] = []
+    projections: list[np.ndarray] = []
     means = cp.array(means, dtype=cp.float32)
 
     rank = B.shape[0]
@@ -81,7 +104,7 @@ def project_data(
         assert proj.dtype == cp.float32
 
         if return_projections:
-            projections.append(proj)
+            projections.append(cp.asnumpy(proj))
         else:
             # Account for centering
             centering = cp.outer(cp.sum(proj, axis=0), means)
