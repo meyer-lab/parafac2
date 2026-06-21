@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from .utils import (
     anndata_to_list,
-    parafac,
+    parafac_update,
     project_data,
     standardize_pf2,
 )
@@ -29,7 +29,7 @@ def store_pf2(
 
     X.obsm["projections"] = np.zeros((X.shape[0], len(X.uns["Pf2_weights"])))
     for i, p in enumerate(parafac2_output[2]):
-        X.obsm["projections"][sgIndex == i, :] = p  # type: ignore
+        X.obsm["projections"][sgIndex == i, :] = p
 
     X.obsm["weighted_projections"] = X.obsm["projections"] @ X.uns["Pf2_B"]
 
@@ -111,25 +111,31 @@ def parafac2_nd(
 
     factors, norm_tensor = parafac2_init(X_list, means, rank, random_state)
 
-    factors_old = deepcopy(factors)
-
-    projected_X, err = project_data(X_list, means, factors, norm_tensor)
+    mttkrps, err = project_data(X_list, means, factors, norm_tensor)
     errs = [err]
 
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=0.5)
     for iteration in tq:
         jump = beta_i + 1.0
 
+        factors_old = deepcopy(factors)
+
+        for mode in range(len(factors)):
+            factors = parafac_update(
+                factors,
+                mttkrps,
+                mode,
+            )
+            mttkrps, err = project_data(X_list, means, factors, norm_tensor)
+
         # Estimate error with line search
         factors_ls = [
             factors_old[ii] + (factors[ii] - factors_old[ii]) * jump for ii in range(3)
         ]
+        _, err_ls = project_data(X_list, means, factors_ls, norm_tensor)
 
-        projected_X_ls, err_ls = project_data(X_list, means, factors, norm_tensor)
-
-        if err_ls < errs[-1] * norm_tensor:
+        if err_ls < err:
             err = err_ls
-            projected_X = projected_X_ls
             factors = factors_ls
 
             beta_i = min(beta_i_bar, gamma * beta_i)
@@ -138,15 +144,7 @@ def parafac2_nd(
             beta_i_bar = beta_i
             beta_i = beta_i / eta
 
-            projected_X, err = project_data(X_list, means, factors, norm_tensor)
-
         errs.append(err / norm_tensor)
-
-        factors_old = deepcopy(factors)
-        factors = parafac(
-            projected_X,
-            factors,
-        )
 
         delta = errs[-2] - errs[-1]
         tq.set_postfix(
@@ -155,17 +153,16 @@ def parafac2_nd(
         if callback is not None:
             callback(iteration, errs[-1], factors)
 
-        if delta < tol:
+        if 0 <= delta < tol:
             break
 
     R2X = 1 - errs[-1]
-    projections = project_data(
+    projections: list[np.ndarray] = project_data(
         X_list, means, factors, norm_tensor, return_projections=True
     )
 
     # Move back to the CPU
     factors = [cp.asnumpy(f) for f in factors]
-    projections = [cp.asnumpy(p) for p in projections]
 
     # Standardize the results and return
     return standardize_pf2(factors, projections), R2X
