@@ -1,6 +1,6 @@
 [project]
 name = "parafac2"
-version = "1.0"
+version = "1.2.0"
 description = "An implementation of PARAFAC2 that handles sparsity for single cell data."
 authors = [{name = "Aaron Meyer", email = "git@asmlab.org" }]
 license = "MIT"
