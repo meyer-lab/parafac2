@@ -9,6 +9,11 @@ def prepare_dataset(
     X: anndata.AnnData, condition_name: str, geneThreshold: float
 ) -> anndata.AnnData:
     assert issparse(X.X)
+    # Materialise any view before mutating X.X. Setting X.X on an anndata view
+    # triggers a sparse setitem on the parent matrix (parent._X[selector, :] = value),
+    # which forces scipy to convert the full parent CSR to LIL/dense → OOM.
+    if X.is_view:
+        X = X.copy()
     X.X = csr_array(X.X)
     X_X = cast("csr_array", X.X)
     assert np.amin(X_X.data) >= 0.0
