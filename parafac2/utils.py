@@ -11,7 +11,7 @@ from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 
 def parafac_update(
     factors: list[cp.ndarray],
-    mttkrps: list[cp.ndarray],
+    mttkrp: cp.ndarray,
     mode: int,
     l1_c: float = 0.0,
     max_iter_cd: int = 100,
@@ -32,7 +32,7 @@ def parafac_update(
     # Update the factor for the current mode
     if mode == 2 and l1_c > 0.0:
         C = factors[2].copy()
-        M = mttkrps[2]
+        M = mttkrp
         for _ in range(max_iter_cd):
             C_old = C.copy()
             for j in range(rank):
@@ -47,7 +47,7 @@ def parafac_update(
                 break
         factors[2] = C
     else:
-        factors[mode] = cp.linalg.solve(v.T, mttkrps[mode].T).T
+        factors[mode] = cp.linalg.solve(v.T, mttkrp.T).T
 
     return factors
 
@@ -75,6 +75,7 @@ def project_data(
     means: cp.ndarray,
     factors: list[cp.ndarray],
     norm_X_sq: float,
+    mode: int,
     return_projections: Literal[True],
 ) -> list[np.ndarray]: ...
 
@@ -85,8 +86,9 @@ def project_data(
     means: cp.ndarray,
     factors: list[cp.ndarray],
     norm_X_sq: float,
+    mode: int,
     return_projections: Literal[False] = False,
-) -> tuple[list[cp.ndarray], float]: ...
+) -> tuple[cp.ndarray, float]: ...
 
 
 def project_data(
@@ -94,8 +96,9 @@ def project_data(
     means: cp.ndarray,
     factors: list[cp.ndarray],
     norm_X_sq: float,
+    mode: int,
     return_projections: bool = False,
-) -> list[np.ndarray] | tuple[list[cp.ndarray], float]:
+) -> list[np.ndarray] | tuple[cp.ndarray, float]:
     A, B, C = factors
     CtC = C.T @ C
     assert CtC.dtype == cp.float64
@@ -103,24 +106,52 @@ def project_data(
     norm_sq_err = norm_X_sq
 
     projections: list[np.ndarray] = []
-    means = cp.array(means, dtype=cp.float32)
+    means = cp.asarray(means, dtype=cp.float32)
+    mean_C = means @ C  # (rank,): precompute once
 
     rank = B.shape[0]
     n_cond = len(X_list)
     n_genes = C.shape[0]
-    mttkrps: list[cp.ndarray] = [
-        cp.zeros((n_cond, rank), dtype=cp.float32),
-        cp.zeros((rank, rank), dtype=cp.float32),
-        cp.zeros((n_genes, rank), dtype=cp.float32),
-    ]
+
+    # Hoist loop-invariant matmuls
+    BtB = B.T @ B  # (rank, rank)
+
+    # First pass: compute M matrices and accumulate G for a single batched eigh call
+    G_all = cp.zeros((n_cond, rank, rank), dtype=cp.float64)
+    M_all: list[cp.ndarray] = []
 
     for i, mat in enumerate(X_list):
         if isinstance(mat, np.ndarray):
             mat = cp.array(mat, dtype=cp.float32)
 
-        lhs = cp.array((A[i] * C) @ B.T, dtype=cp.float32)
-        U, _, Vh = cp.linalg.svd(mat @ lhs - means @ lhs, full_matrices=False)
-        proj = U @ Vh
+        lhs = (A[i] * C) @ B.T  # (n_genes, rank)
+        M = mat @ lhs - (A[i] * mean_C) @ B.T  # (n_cells, rank)
+        M_f64 = M.astype(cp.float64)
+        G_all[i] = M_f64.T @ M_f64  # (rank, rank) float64
+        M_all.append(M_f64)
+
+    # Single batched eigh over all slices: (n_cond, rank, rank) → V_all (n_cond, rank, rank)
+    _, V_all = cp.linalg.eigh(G_all)
+
+    # Allocate the single mttkrp buffer for the requested mode
+    if mode == 0:
+        mttkrp: cp.ndarray = cp.zeros((n_cond, rank), dtype=cp.float32)
+    elif mode == 1:
+        mttkrp = cp.zeros((rank, rank), dtype=cp.float32)
+    else:
+        mttkrp = cp.zeros((n_genes, rank), dtype=cp.float32)
+
+    # Second pass: compute projections and accumulate using cached M and V
+    for i, mat in enumerate(X_list):
+        if isinstance(mat, np.ndarray):
+            mat = cp.array(mat, dtype=cp.float32)
+
+        M_f64 = M_all[i]
+        V = V_all[i]
+        MV = M_f64 @ V  # ≈ U @ S @ D, orthogonal columns
+        col_norms = cp.linalg.norm(MV, axis=0, keepdims=True)
+        safe_norms = cp.where(col_norms > 1e-10, col_norms, 1.0)
+        proj = ((MV / safe_norms) @ V.T).astype(cp.float32)  # D cancels → U @ Vh
         assert proj.dtype == cp.float32
 
         if return_projections:
@@ -130,22 +161,23 @@ def project_data(
             centering = cp.outer(cp.sum(proj, axis=0), means)
             proj_slice = proj.T @ mat - centering
 
-            # accumulate error
-            B_i_inner = A[i][:, cp.newaxis] * (B.T @ B) * A[i]
+            B_i_inner = A[i][:, cp.newaxis] * BtB * A[i]
+            psc = proj_slice @ C  # (rank, rank); needed for error + modes 0,1
 
-            # trace of the multiplication products
-            norm_sq_err -= 2.0 * cp.einsum("r,jr,jr->", A[i], B, proj_slice @ C)
+            norm_sq_err -= 2.0 * cp.einsum("r,jr,jr->", A[i], B, psc)
             norm_sq_err += (B_i_inner * CtC).sum()
 
-            # Accumulate MTTKRP contributions
-            mttkrps[0][i] = cp.sum((proj_slice @ C) * B, axis=0)
-            mttkrps[1] += (proj_slice @ C) * A[i]
-            mttkrps[2] += (proj_slice.T @ B) * A[i]
+            if mode == 0:
+                mttkrp[i] = cp.sum(psc * B, axis=0)
+            elif mode == 1:
+                mttkrp += psc * A[i]
+            else:
+                mttkrp += (proj_slice.T @ B) * A[i]
 
     if return_projections:
         return projections
 
-    return mttkrps, float(cp.asnumpy(norm_sq_err))
+    return mttkrp, float(cp.asnumpy(norm_sq_err))
 
 
 def standardize_pf2(
