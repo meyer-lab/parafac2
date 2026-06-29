@@ -91,6 +91,9 @@ def parafac2_nd(
     tol: float = 1e-6,
     random_state: int | None = None,
     callback: Callable[[int, float, list], None] | None = None,
+    l1_c: float = 0.0,
+    max_iter_cd: int = 100,
+    tol_cd: float = 1e-5,
 ) -> tuple[tuple, float]:
     r"""The same interface as regular PARAFAC2."""
     # Verbose if this is not an automated build
@@ -125,6 +128,9 @@ def parafac2_nd(
                 factors,
                 mttkrps,
                 mode,
+                l1_c=l1_c,
+                max_iter_cd=max_iter_cd,
+                tol_cd=tol_cd,
             )
             mttkrps, err = project_data(X_list, means, factors, norm_tensor)
 
@@ -134,7 +140,14 @@ def parafac2_nd(
         ]
         _, err_ls = project_data(X_list, means, factors_ls, norm_tensor)
 
-        if err_ls < err:
+        if l1_c > 0.0:
+            obj = 0.5 * err + l1_c * float(cp.sum(cp.abs(factors[2])))
+            obj_ls = 0.5 * err_ls + l1_c * float(cp.sum(cp.abs(factors_ls[2])))
+            is_better = obj_ls < obj
+        else:
+            is_better = err_ls < err
+
+        if is_better:
             err = err_ls
             factors = factors_ls
 

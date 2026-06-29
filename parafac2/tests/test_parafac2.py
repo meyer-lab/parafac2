@@ -246,3 +246,45 @@ def test_pf2_proj_centering():
     np.testing.assert_allclose(
         norm_sq_err / norm_X_sq, norm_sq_err_centered / norm_X_sq, atol=1e-6
     )
+
+
+def test_parafac2_l1_regularization():
+    """Test that L1 regularization on factor C works, induces sparsity,
+    and is disabled by default."""
+    shapes = [(20, 25) for _ in range(3)]
+    rank = 2
+    rng = np.random.default_rng(42)
+
+    X_list = [rng.normal(size=shape) for shape in shapes]
+    X_ann = pf2_to_anndata(X_list, sparse=False)
+
+    # 1. Verify default behaves identically to l1_c=0.0
+    (w_default, f_default, p_default), r2x_default = parafac2_nd(
+        X_ann, rank=rank, n_iter_max=10, random_state=42
+    )
+    (w_zero, f_zero, p_zero), r2x_zero = parafac2_nd(
+        X_ann, rank=rank, n_iter_max=10, random_state=42, l1_c=0.0
+    )
+
+    np.testing.assert_allclose(w_default, w_zero, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(r2x_default, r2x_zero, rtol=1e-6, atol=1e-6)
+    for fd, fz in zip(f_default, f_zero, strict=True):
+        np.testing.assert_allclose(fd, fz, rtol=1e-6, atol=1e-6)
+
+    # Verify that without L1 regularization, factor C is dense
+    C_default = f_default[2]
+    assert np.all(C_default != 0.0)
+
+    # 2. Verify that L1 regularization with l1_c > 0.0 induces sparsity
+    # Use a large l1_c to ensure some elements of C are thresholded to exactly 0
+    (w_reg, f_reg, p_reg), r2x_reg = parafac2_nd(
+        X_ann, rank=rank, n_iter_max=50, random_state=42, l1_c=0.5
+    )
+    C_reg = f_reg[2]
+
+    # Check that there are zero elements in C
+    num_zeros = np.sum(C_reg == 0.0)
+    assert num_zeros > 0, "L1 regularization did not induce any zeros in C"
+
+    # Also check that it's different from the unregularized result
+    assert not np.allclose(C_reg, C_default, rtol=1e-3, atol=1e-3)

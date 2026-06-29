@@ -13,6 +13,9 @@ def parafac_update(
     factors: list[cp.ndarray],
     mttkrps: list[cp.ndarray],
     mode: int,
+    l1_c: float = 0.0,
+    max_iter_cd: int = 100,
+    tol_cd: float = 1e-5,
 ):
     """
     Perform sequential PARAFAC updates for all modes using pre-computed MTTKRPs.
@@ -27,7 +30,24 @@ def parafac_update(
             v *= factor.T @ factor
 
     # Update the factor for the current mode
-    factors[mode] = cp.linalg.solve(v.T, mttkrps[mode].T).T
+    if mode == 2 and l1_c > 0.0:
+        C = factors[2].copy()
+        M = mttkrps[2]
+        for _ in range(max_iter_cd):
+            C_old = C.copy()
+            for j in range(rank):
+                rho_j = M[:, j] - (C @ v[j, :]) + v[j, j] * C[:, j]
+                denom = v[j, j]
+                if denom > 1e-15:
+                    soft_val = cp.maximum(0.0, cp.abs(rho_j) - l1_c)
+                    C[:, j] = cp.sign(rho_j) * soft_val / denom
+                else:
+                    C[:, j] = cp.zeros_like(rho_j)
+            if cp.max(cp.abs(C - C_old)) < tol_cd:
+                break
+        factors[2] = C
+    else:
+        factors[mode] = cp.linalg.solve(v.T, mttkrps[mode].T).T
 
     return factors
 
