@@ -55,13 +55,11 @@ def test_init_reprod(sparse: bool):
     for ii in range(3):
         cp.testing.assert_array_equal(f1[ii], f2[ii])
 
-    mttkrp_1, _ = project_data(X_reprod, means, f1, 1.0)
-    mttkrp_2, _ = project_data(X_reprod, means, f2, 1.0)
-
-    # Compare both seeds
-    cp.testing.assert_array_equal(mttkrp_1[0], mttkrp_2[0])
-    cp.testing.assert_array_equal(mttkrp_1[1], mttkrp_2[1])
-    cp.testing.assert_array_equal(mttkrp_1[2], mttkrp_2[2])
+    # Compare both seeds for each mode
+    for mode in range(3):
+        m1, _ = project_data(X_reprod, means, f1, 1.0, mode=mode)
+        m2, _ = project_data(X_reprod, means, f2, 1.0, mode=mode)
+        cp.testing.assert_array_equal(m1, m2)
 
 
 def test_parafac2_orthonormality():
@@ -201,9 +199,14 @@ def test_pf2_r2x():
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
     cp_f = [cp.array(x) for x in f]
 
-    _, errCMF = project_data(X, cp.zeros((1, X[0].shape[1])), cp_f, norm_tensor)
+    _, errCMF = project_data(X, cp.zeros((1, X[0].shape[1])), cp_f, norm_tensor, mode=0)
     p = project_data(
-        X, cp.zeros((1, X[0].shape[1])), cp_f, norm_tensor, return_projections=True
+        X,
+        cp.zeros((1, X[0].shape[1])),
+        cp_f,
+        norm_tensor,
+        mode=0,
+        return_projections=True,
     )
 
     p = [cp.asnumpy(pp) for pp in p]
@@ -228,7 +231,7 @@ def test_pf2_proj_centering():
     norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))
 
     projected_X, norm_sq_err = project_data(
-        X_pf, cp.zeros((1, 300)), cp_factors, norm_X_sq
+        X_pf, cp.zeros((1, 300)), cp_factors, norm_X_sq, mode=0
     )
 
     np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
@@ -238,11 +241,10 @@ def test_pf2_proj_centering():
     X_pf = [xx + means for xx in X_pf]
 
     projected_X_mean, norm_sq_err_centered = project_data(
-        X_pf, cp.array(means), cp_factors, norm_X_sq
+        X_pf, cp.array(means), cp_factors, norm_X_sq, mode=0
     )
 
-    for p_x, p_x_mean in zip(projected_X, projected_X_mean, strict=True):
-        cp.testing.assert_allclose(p_x, p_x_mean, rtol=1.0e-4, atol=1.0e-4)
+    cp.testing.assert_allclose(projected_X, projected_X_mean, rtol=1.0e-4, atol=1.0e-4)
     np.testing.assert_allclose(
         norm_sq_err / norm_X_sq, norm_sq_err_centered / norm_X_sq, atol=1e-6
     )

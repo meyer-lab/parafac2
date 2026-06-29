@@ -114,7 +114,7 @@ def parafac2_nd(
 
     factors, norm_tensor = parafac2_init(X_list, means, rank, random_state)
 
-    mttkrps, err = project_data(X_list, means, factors, norm_tensor)
+    mttkrp, err = project_data(X_list, means, factors, norm_tensor, mode=0)
     errs = [err]
 
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=0.5)
@@ -126,19 +126,21 @@ def parafac2_nd(
         for mode in range(len(factors)):
             factors = parafac_update(
                 factors,
-                mttkrps,
+                mttkrp,
                 mode,
                 l1_c=l1_c,
                 max_iter_cd=max_iter_cd,
                 tol_cd=tol_cd,
             )
-            mttkrps, err = project_data(X_list, means, factors, norm_tensor)
+            mttkrp, err = project_data(
+                X_list, means, factors, norm_tensor, mode=(mode + 1) % len(factors)
+            )
 
         # Estimate error with line search
         factors_ls = [
             factors_old[ii] + (factors[ii] - factors_old[ii]) * jump for ii in range(3)
         ]
-        _, err_ls = project_data(X_list, means, factors_ls, norm_tensor)
+        _, err_ls = project_data(X_list, means, factors_ls, norm_tensor, mode=0)
 
         if l1_c > 0.0:
             obj = 0.5 * err + l1_c * float(cp.sum(cp.abs(factors[2])))
@@ -171,7 +173,7 @@ def parafac2_nd(
 
     R2X = 1 - errs[-1]
     projections: list[np.ndarray] = project_data(
-        X_list, means, factors, norm_tensor, return_projections=True
+        X_list, means, factors, norm_tensor, mode=0, return_projections=True
     )
 
     # Move back to the CPU
