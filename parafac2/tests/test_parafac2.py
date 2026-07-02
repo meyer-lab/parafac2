@@ -39,8 +39,10 @@ def test_init_reprod(sparse: bool):
     X_reprod: list[np.ndarray] = random_parafac2(pf2shape_reprod, rank=3, full=True)
 
     X_ann = pf2_to_anndata(X_reprod, sparse=sparse)
-    means = cp.array(X_ann.var["means"])
+    means = X_ann.var["means"].to_numpy()
 
+    # parafac2_init touches the full per-cell data (the actual GPU
+    # bottleneck), so it still expects GPU-resident condition matrices.
     X_list = [cp.array(x) for x in X_reprod]
 
     f1, _ = parafac2_init(X_list, means, rank=3, random_state=1)
@@ -53,13 +55,15 @@ def test_init_reprod(sparse: bool):
 
     # Compare both seeds
     for ii in range(3):
-        cp.testing.assert_array_equal(f1[ii], f2[ii])
+        np.testing.assert_array_equal(f1[ii], f2[ii])
 
-    # Compare both seeds for each mode
+    # Compare both seeds for each mode. project_data only needs GPU for the
+    # large per-cell GEMMs and accepts plain numpy condition matrices too,
+    # converting internally as needed.
     for mode in range(3):
         m1, _ = project_data(X_reprod, means, f1, 1.0, mode=mode)
         m2, _ = project_data(X_reprod, means, f2, 1.0, mode=mode)
-        cp.testing.assert_array_equal(m1, m2)
+        np.testing.assert_array_equal(m1, m2)
 
 
 def test_parafac2_orthonormality():
@@ -197,19 +201,16 @@ def test_pf2_r2x():
     norm_tensor = float(np.linalg.norm(X) ** 2)
 
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
-    cp_f = [cp.array(x) for x in f]
 
-    _, errCMF = project_data(X, cp.zeros((1, X[0].shape[1])), cp_f, norm_tensor, mode=0)
+    _, errCMF = project_data(X, np.zeros((1, X[0].shape[1])), f, norm_tensor, mode=0)
     p = project_data(
         X,
-        cp.zeros((1, X[0].shape[1])),
-        cp_f,
+        np.zeros((1, X[0].shape[1])),
+        f,
         norm_tensor,
         mode=0,
         return_projections=True,
     )
-
-    p = [cp.asnumpy(pp) for pp in p]
 
     err = _parafac2_reconstruction_error(X, (w, f, p)) ** 2
 
@@ -224,14 +225,13 @@ def test_pf2_proj_centering():
         normalise_factors=False,
         dtype=np.float64,
     )
-    cp_factors = [cp.array(x) for x in factors]
 
     X_pf = parafac2_to_slices((None, factors, projections))
 
     norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))
 
     projected_X, norm_sq_err = project_data(
-        X_pf, cp.zeros((1, 300)), cp_factors, norm_X_sq, mode=0
+        X_pf, np.zeros((1, 300)), factors, norm_X_sq, mode=0
     )
 
     np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
@@ -241,10 +241,10 @@ def test_pf2_proj_centering():
     X_pf = [xx + means for xx in X_pf]
 
     projected_X_mean, norm_sq_err_centered = project_data(
-        X_pf, cp.array(means), cp_factors, norm_X_sq, mode=0
+        X_pf, means, factors, norm_X_sq, mode=0
     )
 
-    cp.testing.assert_allclose(projected_X, projected_X_mean, rtol=1.0e-4, atol=1.0e-4)
+    np.testing.assert_allclose(projected_X, projected_X_mean, rtol=1.0e-4, atol=1.0e-4)
     np.testing.assert_allclose(
         norm_sq_err / norm_X_sq, norm_sq_err_centered / norm_X_sq, atol=1e-6
     )
