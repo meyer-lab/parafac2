@@ -46,7 +46,7 @@ def prepare_dataset(
     np.log10(X_X.data, out=X_X.data)
 
     # Get the indices for subsetting the data
-    _, sgIndex = np.unique(X.obs_vector(condition_name), return_inverse=True)
+    _, sgIndex = np.unique(X.obs[condition_name], return_inverse=True)
     X.obs["condition_unique_idxs"] = sgIndex
 
     # Pre-calculate gene means
