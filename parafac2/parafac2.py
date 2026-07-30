@@ -7,6 +7,7 @@ import cupy as cp
 import numpy as np
 from cupyx.scipy import sparse as cupy_sparse
 from scipy.linalg import eigh
+from scipy.sparse import csr_matrix, issparse
 from tqdm import tqdm
 
 from .utils import (
@@ -37,19 +38,14 @@ def store_pf2(
 
 
 def parafac2_init(
-    X_in: list[cp.ndarray | cupy_sparse.csr_matrix],
+    X_in: list[np.ndarray | csr_matrix],
     means: np.ndarray,
     rank: int,
     random_state: int | None = None,  # noqa: ARG001
 ) -> tuple[list[np.ndarray], float]:
     """
-    Only the covariance accumulation below touches the full per-cell data
-    matrices (`X_cond.T @ X_cond`), so that stays on the GPU -- profiling
-    showed a ~75x speedup there. The resulting (n_genes, n_genes) covariance
-    matrix is comparatively small, and a dense CPU eigendecomposition of it
-    was measured to be faster than the GPU sparse eigsh (no Lanczos kernel-
-    launch overhead), so the eigendecomposition and everything downstream of
-    it runs on the CPU with numpy/scipy.
+    Compute the dataset covariance matrix across all conditions and perform an
+    eigendecomposition on CPU to initialize factors.
     """
     # Index dataset to a list of conditions
     n_cond = len(X_in)
@@ -57,33 +53,36 @@ def parafac2_init(
     means = means.ravel()
 
     # Calculate covariance matrix while preserving sparsity
-    cov_matrix = cp.zeros((n_genes, n_genes), dtype=cp.float64)
-    axis0_sum = cp.zeros(n_genes, dtype=cp.float64)
+    cov_matrix = np.zeros((n_genes, n_genes), dtype=np.float64)
+    axis0_sum = np.zeros(n_genes, dtype=np.float64)
     total_rows = 0
 
     for X_cond in X_in:
-        if isinstance(X_cond, cupy_sparse.csr_matrix):
-            XX = X_cond.toarray()
-            cov_matrix += XX.T @ XX
+        if isinstance(X_cond, cp.ndarray):
+            cov_matrix += cp.asnumpy(X_cond.T @ X_cond)
+            axis0_sum += cp.asnumpy(X_cond.sum(axis=0)).ravel()
+        elif isinstance(X_cond, cupy_sparse.spmatrix):
+            cov_matrix += cp.asnumpy((X_cond.T @ X_cond).toarray())
+            axis0_sum += cp.asnumpy(X_cond.sum(axis=0)).ravel()
+        elif issparse(X_cond):
+            cov_matrix += (X_cond.T @ X_cond).toarray()
+            axis0_sum += np.asarray(X_cond.sum(axis=0)).ravel()
         else:
             cov_matrix += X_cond.T @ X_cond
+            axis0_sum += np.asarray(X_cond.sum(axis=0)).ravel()
 
-        axis0_sum += X_cond.sum(axis=0).flatten()
         total_rows += X_cond.shape[0]
 
-    cov_matrix_np = cp.asnumpy(cov_matrix)
-    axis0_sum_np = cp.asnumpy(axis0_sum)
-
-    cov_matrix_np -= np.outer(means, axis0_sum_np)
-    cov_matrix_np -= np.outer(axis0_sum_np, means)
-    cov_matrix_np += total_rows * np.outer(means, means)
+    cov_matrix -= np.outer(means, axis0_sum)
+    cov_matrix -= np.outer(axis0_sum, means)
+    cov_matrix += total_rows * np.outer(means, means)
 
     # Calculate the norm using the covariance matrix
-    norm_tensor = np.trace(cov_matrix_np)
+    norm_tensor = np.trace(cov_matrix)
 
     # Compute the top-`rank` eigenvectors of the covariance matrix
     eigenvals, eigenvecs = eigh(
-        cov_matrix_np, subset_by_index=[n_genes - rank, n_genes - 1]
+        cov_matrix, subset_by_index=[n_genes - rank, n_genes - 1]
     )
     # Sort in descending order of eigenvalues
     idx = np.argsort(eigenvals)[::-1]
