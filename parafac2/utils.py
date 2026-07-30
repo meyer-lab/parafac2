@@ -6,6 +6,7 @@ import cupy as cp
 import numpy as np
 from cupyx.scipy import sparse as cupy_sparse
 from scipy.optimize import linear_sum_assignment
+from scipy.sparse import csr_matrix, issparse
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 
 
@@ -56,28 +57,25 @@ def parafac_update(
     return factors
 
 
-def anndata_to_list(X_in: anndata.AnnData) -> list[cp.ndarray | cupy_sparse.csr_matrix]:
-    # Index dataset to a list of conditions. These per-condition matrices feed
-    # directly into the large data GEMMs in project_data/parafac2_init, which
-    # are the actual GPU bottlenecks, so they are staged on the GPU here.
+def anndata_to_list(X_in: anndata.AnnData) -> list[np.ndarray | csr_matrix]:
+    # Index dataset to a list of conditions on host CPU memory to avoid
+    # staging all per-condition matrices in GPU VRAM at once.
     sgIndex = cast("np.ndarray", X_in.obs["condition_unique_idxs"].to_numpy(dtype=int))
 
     X_list = []
     for i in range(np.amax(sgIndex) + 1):
-        # Prepare CuPy matrix
-        if isinstance(X_in.X, np.ndarray):
-            X_list.append(cp.array(X_in.X[sgIndex == i], dtype=cp.float32))  # type: ignore
+        slice_mat = X_in.X[sgIndex == i]
+        if issparse(slice_mat):
+            X_list.append(csr_matrix(slice_mat, dtype=np.float32))
         else:
-            X_list.append(
-                cupy_sparse.csr_matrix(X_in.X[sgIndex == i], dtype=cp.float32)  # type: ignore
-            )
+            X_list.append(np.array(slice_mat, dtype=np.float32))
 
     return X_list
 
 
 @overload
 def project_data(
-    X_list: Sequence[cp.ndarray | np.ndarray | cupy_sparse.csr_matrix],
+    X_list: Sequence[cp.ndarray | np.ndarray | cupy_sparse.csr_matrix | csr_matrix],
     means: np.ndarray,
     factors: list[np.ndarray],
     norm_X_sq: float,
@@ -88,7 +86,7 @@ def project_data(
 
 @overload
 def project_data(
-    X_list: Sequence[cp.ndarray | np.ndarray | cupy_sparse.csr_matrix],
+    X_list: Sequence[cp.ndarray | np.ndarray | cupy_sparse.csr_matrix | csr_matrix],
     means: np.ndarray,
     factors: list[np.ndarray],
     norm_X_sq: float,
@@ -98,7 +96,7 @@ def project_data(
 
 
 def project_data(
-    X_list: Sequence[cp.ndarray | np.ndarray | cupy_sparse.csr_matrix],
+    X_list: Sequence[cp.ndarray | np.ndarray | cupy_sparse.csr_matrix | csr_matrix],
     means: np.ndarray,
     factors: list[np.ndarray],
     norm_X_sq: float,
@@ -149,9 +147,16 @@ def project_data(
 
     M_chunks_gpu = []
     for i, mat in enumerate(X_list):
-        if isinstance(mat, np.ndarray):
-            mat = cp.array(mat, dtype=cp.float32)
-        M_chunks_gpu.append(mat @ lhs_all_gpu[i] - mean_term_all_gpu[i])
+        if isinstance(mat, cp.ndarray):
+            mat_gpu = mat
+        elif isinstance(mat, cupy_sparse.spmatrix):
+            mat_gpu = mat
+        elif issparse(mat):
+            mat_gpu = cupy_sparse.csr_matrix(mat, dtype=cp.float32)
+        else:
+            mat_gpu = cp.array(mat, dtype=cp.float32)
+        M_chunks_gpu.append(mat_gpu @ lhs_all_gpu[i] - mean_term_all_gpu[i])
+        del mat_gpu
 
     M_all = cp.asnumpy(cp.concatenate(M_chunks_gpu, axis=0)).astype(np.float64)
     M_list = [M_all[bounds[i] : bounds[i + 1]] for i in range(n_cond)]
@@ -175,9 +180,16 @@ def project_data(
     proj_all_gpu = [cp.asarray(p) for p in proj_list]
     proj_slice_chunks_gpu = []
     for i, mat in enumerate(X_list):
-        if isinstance(mat, np.ndarray):
-            mat = cp.array(mat, dtype=cp.float32)
-        proj_slice_chunks_gpu.append(proj_all_gpu[i].T @ mat)  # (rank, n_genes)
+        if isinstance(mat, cp.ndarray):
+            mat_gpu = mat
+        elif isinstance(mat, cupy_sparse.spmatrix):
+            mat_gpu = mat
+        elif issparse(mat):
+            mat_gpu = cupy_sparse.csr_matrix(mat, dtype=cp.float32)
+        else:
+            mat_gpu = cp.array(mat, dtype=cp.float32)
+        proj_slice_chunks_gpu.append(proj_all_gpu[i].T @ mat_gpu)  # (rank, n_genes)
+        del mat_gpu
 
     proj_slice_all = cp.asnumpy(cp.stack(proj_slice_chunks_gpu, axis=0))
 
