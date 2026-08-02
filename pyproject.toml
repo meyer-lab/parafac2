@@ -12,6 +12,10 @@ dependencies = [
     "tensorly>=0.8.1",
     "tqdm>=4.68",
     "anndata>=0.12",
+]
+
+[project.optional-dependencies]
+gpu = [
     "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "cupy; sys_platform != 'darwin'",
 ]
@@ -25,5 +29,8 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["uv_build>=0.12.0,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = "."

@@ -6,6 +6,11 @@ from scipy.sparse import csr_array, issparse
 _MLX_CSR_SPMM_KERNEL = None
 _MLX_CSR_ATOMIC_RSPMM_KERNEL = None
 
+_MLX_METAL_HEADER = """
+#include <metal_stdlib>
+using namespace metal;
+"""
+
 
 def get_backend(backend: str | None = None) -> str:
     """Return requested or first available backend ('mlx', 'cupy', or 'cpu')."""
@@ -34,11 +39,28 @@ def get_backend(backend: str | None = None) -> str:
     return "cpu"
 
 
+def _make_mlx_kernel(
+    name: str,
+    input_names: list[str],
+    output_names: list[str],
+    source: str,
+    atomic_outputs: bool = False,
+) -> Any:
+    import mlx.core as mx
+
+    return mx.fast.metal_kernel(
+        name=name,
+        input_names=input_names,
+        output_names=output_names,
+        source=source,
+        atomic_outputs=atomic_outputs,
+        header=_MLX_METAL_HEADER,
+    )
+
+
 def _get_mlx_csr_spmm_kernel() -> Any:
     global _MLX_CSR_SPMM_KERNEL
     if _MLX_CSR_SPMM_KERNEL is None:
-        import mlx.core as mx
-
         source = """
             uint row = thread_position_in_grid.x;
             uint k = thread_position_in_grid.y;
@@ -53,12 +75,11 @@ def _get_mlx_csr_spmm_kernel() -> Any:
             }
             out[row * K + k] = acc;
         """
-        _MLX_CSR_SPMM_KERNEL = mx.fast.metal_kernel(
+        _MLX_CSR_SPMM_KERNEL = _make_mlx_kernel(
             name="csr_spmm",
             input_names=["data", "indices", "indptr", "rhs"],
             output_names=["out"],
             source=source,
-            header="#include <metal_stdlib>\nusing namespace metal;",
         )
     return _MLX_CSR_SPMM_KERNEL
 
@@ -66,8 +87,6 @@ def _get_mlx_csr_spmm_kernel() -> Any:
 def _get_mlx_csr_atomic_rspmm_kernel() -> Any:
     global _MLX_CSR_ATOMIC_RSPMM_KERNEL
     if _MLX_CSR_ATOMIC_RSPMM_KERNEL is None:
-        import mlx.core as mx
-
         source = """
             uint k = thread_position_in_grid.x;
             uint row = thread_position_in_grid.y;
@@ -84,15 +103,31 @@ def _get_mlx_csr_atomic_rspmm_kernel() -> Any:
                 atomic_fetch_add_explicit(&out[k * N + col], prod, memory_order_relaxed);
             }
         """
-        _MLX_CSR_ATOMIC_RSPMM_KERNEL = mx.fast.metal_kernel(
+        _MLX_CSR_ATOMIC_RSPMM_KERNEL = _make_mlx_kernel(
             name="dense_csr_spmm_atomic",
             input_names=["lhs", "data", "indices", "indptr"],
             output_names=["out"],
             source=source,
             atomic_outputs=True,
-            header="#include <metal_stdlib>\nusing namespace metal;",
         )
     return _MLX_CSR_ATOMIC_RSPMM_KERNEL
+
+
+def _csr_to_mlx(mat_csr: csr_array) -> tuple[Any, Any, Any]:
+    import mlx.core as mx
+
+    mx_data = mx.array(mat_csr.data.astype(np.float32, copy=False))
+    mx_indices = mx.array(mat_csr.indices.astype(np.int32, copy=False))
+    mx_indptr = mx.array(mat_csr.indptr.astype(np.int32, copy=False))
+    return mx_data, mx_indices, mx_indptr
+
+
+def _mlx_to_numpy(mx_out: Any, orig_dtype: np.dtype, is_1d: bool) -> np.ndarray:
+    import mlx.core as mx
+
+    mx.eval(mx_out)
+    res_arr = np.asarray(mx_out).astype(orig_dtype, copy=False)
+    return res_arr.ravel() if is_1d else res_arr
 
 
 def _matmul_mlx(mat: np.ndarray | csr_array, rhs: np.ndarray) -> np.ndarray:
@@ -106,9 +141,7 @@ def _matmul_mlx(mat: np.ndarray | csr_array, rhs: np.ndarray) -> np.ndarray:
         rhs_2d = rhs[:, None] if rhs.ndim == 1 else rhs
         K = rhs_2d.shape[1]
 
-        mx_data = mx.array(mat_csr.data.astype(np.float32, copy=False))
-        mx_indices = mx.array(mat_csr.indices.astype(np.int32, copy=False))
-        mx_indptr = mx.array(mat_csr.indptr.astype(np.int32, copy=False))
+        mx_data, mx_indices, mx_indptr = _csr_to_mlx(mat_csr)
         mx_rhs = mx.array(rhs_2d.astype(np.float32, copy=False))
 
         kernel = _get_mlx_csr_spmm_kernel()
@@ -122,18 +155,12 @@ def _matmul_mlx(mat: np.ndarray | csr_array, rhs: np.ndarray) -> np.ndarray:
             output_shapes=[(M, K)],
             output_dtypes=[mx.float32],
         )
-        mx.eval(out[0])
-        res_arr = np.asarray(out[0]).astype(orig_dtype, copy=False)
-        if rhs.ndim == 1:
-            res_arr = res_arr.ravel()
+        return _mlx_to_numpy(out[0], orig_dtype, rhs.ndim == 1)
     else:
         mx_mat = mx.array(mat)
         mx_rhs = mx.array(rhs)
         mx_res = mx_mat @ mx_rhs
-        mx.eval(mx_res)
-        res_arr = np.asarray(mx_res).astype(orig_dtype, copy=False)
-
-    return res_arr
+        return _mlx_to_numpy(mx_res, orig_dtype, rhs.ndim == 1)
 
 
 def _rmatmul_mlx(lhs: np.ndarray, mat: np.ndarray | csr_array) -> np.ndarray:
@@ -147,9 +174,7 @@ def _rmatmul_mlx(lhs: np.ndarray, mat: np.ndarray | csr_array) -> np.ndarray:
         lhs_2d = lhs[None, :] if lhs.ndim == 1 else lhs
         K = lhs_2d.shape[0]
 
-        mx_data = mx.array(mat_csr.data.astype(np.float32, copy=False))
-        mx_indices = mx.array(mat_csr.indices.astype(np.int32, copy=False))
-        mx_indptr = mx.array(mat_csr.indptr.astype(np.int32, copy=False))
+        mx_data, mx_indices, mx_indptr = _csr_to_mlx(mat_csr)
         mx_lhs = mx.array(lhs_2d.astype(np.float32, copy=False))
 
         kernel = _get_mlx_csr_atomic_rspmm_kernel()
@@ -170,21 +195,15 @@ def _rmatmul_mlx(lhs: np.ndarray, mat: np.ndarray | csr_array) -> np.ndarray:
             output_dtypes=[mx.float32],
             init_value=0.0,
         )
-        mx.eval(out[0])
-        res_arr = np.asarray(out[0]).astype(orig_dtype, copy=False)
-        if lhs.ndim == 1:
-            res_arr = res_arr.ravel()
+        return _mlx_to_numpy(out[0], orig_dtype, lhs.ndim == 1)
     else:
         mx_lhs = mx.array(lhs)
         mx_mat = mx.array(mat)
         mx_res = mx_lhs @ mx_mat
-        mx.eval(mx_res)
-        res_arr = np.asarray(mx_res).astype(orig_dtype, copy=False)
-
-    return res_arr
+        return _mlx_to_numpy(mx_res, orig_dtype, lhs.ndim == 1)
 
 
-def _matmul_cupy(mat: np.ndarray | csr_array, rhs: np.ndarray) -> np.ndarray:
+def _to_cupy_matrix(mat: np.ndarray | csr_array) -> Any:
     import cupy as cp
     import cupyx.scipy.sparse as cpsparse
 
@@ -193,12 +212,16 @@ def _matmul_cupy(mat: np.ndarray | csr_array, rhs: np.ndarray) -> np.ndarray:
         cp_data = cp.asarray(mat_csr.data)
         cp_indices = cp.asarray(mat_csr.indices)
         cp_indptr = cp.asarray(mat_csr.indptr)
-        cp_mat = cpsparse.csr_matrix(
+        return cpsparse.csr_matrix(
             (cp_data, cp_indices, cp_indptr), shape=mat_csr.shape
         )
-    else:
-        cp_mat = cp.asarray(mat)
+    return cp.asarray(mat)
 
+
+def _matmul_cupy(mat: np.ndarray | csr_array, rhs: np.ndarray) -> np.ndarray:
+    import cupy as cp
+
+    cp_mat = _to_cupy_matrix(mat)
     cp_rhs = cp.asarray(rhs)
     cp_res = cp_mat @ cp_rhs
     return cp.asnumpy(cp_res)
@@ -206,32 +229,11 @@ def _matmul_cupy(mat: np.ndarray | csr_array, rhs: np.ndarray) -> np.ndarray:
 
 def _rmatmul_cupy(lhs: np.ndarray, mat: np.ndarray | csr_array) -> np.ndarray:
     import cupy as cp
-    import cupyx.scipy.sparse as cpsparse
 
     cp_lhs = cp.asarray(lhs)
-    if issparse(mat):
-        mat_csr = cast("csr_array", mat)
-        cp_data = cp.asarray(mat_csr.data)
-        cp_indices = cp.asarray(mat_csr.indices)
-        cp_indptr = cp.asarray(mat_csr.indptr)
-        cp_mat = cpsparse.csr_matrix(
-            (cp_data, cp_indices, cp_indptr), shape=mat_csr.shape
-        )
-    else:
-        cp_mat = cp.asarray(mat)
-
+    cp_mat = _to_cupy_matrix(mat)
     cp_res = cp_lhs @ cp_mat
     return cp.asnumpy(cp_res)
-
-
-def _matmul_cpu(mat: np.ndarray | csr_array, rhs: np.ndarray) -> np.ndarray:
-    res = mat @ rhs
-    return res.toarray() if issparse(res) else np.asarray(res)
-
-
-def _rmatmul_cpu(lhs: np.ndarray, mat: np.ndarray | csr_array) -> np.ndarray:
-    res = lhs @ mat
-    return res.toarray() if issparse(res) else np.asarray(res)
 
 
 class SampleArray:
@@ -293,7 +295,7 @@ class SampleArray:
         elif chosen_backend == "cupy":
             res_arr = _matmul_cupy(self.mat, rhs)
         else:
-            res_arr = _matmul_cpu(self.mat, rhs)
+            res_arr = self.mat @ rhs
 
         return res_arr - (self.means @ rhs)
 
@@ -309,11 +311,10 @@ class SampleArray:
         elif chosen_backend == "cupy":
             res_arr = _rmatmul_cupy(lhs, self.mat)
         else:
-            res_arr = _rmatmul_cpu(lhs, self.mat)
+            res_arr = lhs @ self.mat
 
         if lhs.ndim == 2:
             row_sums = np.sum(lhs, axis=1)
             return res_arr - np.outer(row_sums, self.means)
         else:
             return res_arr - np.sum(lhs) * self.means
-

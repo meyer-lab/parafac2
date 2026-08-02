@@ -6,11 +6,11 @@ gene expression datasets stored in AnnData objects prior to PARAFAC2 matrix
 factorization.
 """
 
-import pandas as pd
 from typing import cast
 
 import anndata
 import numpy as np
+import pandas as pd
 from scipy.sparse import csr_array, issparse
 
 
