@@ -1,20 +1,20 @@
 from typing import cast
 
 import numpy as np
-from scipy.sparse import csr_matrix, issparse
+from scipy.sparse import csr_array, issparse
 
 
 class SampleArray:
     """
-    Wrapper for a single sample matrix (csr_matrix or np.ndarray) and its gene means.
+    Wrapper for a single sample matrix (csr_array or np.ndarray) and its gene means.
     Automatically performs mean-centering during left and right matrix multiplications.
     """
 
     __array_priority__ = 1000
 
-    def __init__(self, mat: np.ndarray | csr_matrix, means: np.ndarray):
+    def __init__(self, mat: np.ndarray | csr_array, means: np.ndarray):
         if issparse(mat):
-            self.mat = csr_matrix(mat)
+            self.mat = csr_array(mat)
         else:
             self.mat = np.asarray(mat)
         self.means = np.asarray(means).ravel()
@@ -37,7 +37,7 @@ class SampleArray:
     def toarray(self) -> np.ndarray:
         """Return the dense, mean-centered matrix."""
         dense = (
-            cast("csr_matrix", self.mat).toarray()
+            cast("csr_array", self.mat).toarray()
             if issparse(self.mat)
             else self.mat
         )

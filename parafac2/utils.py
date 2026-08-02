@@ -7,7 +7,7 @@ from scipy.optimize import linear_sum_assignment
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 
 if TYPE_CHECKING:
-    from scipy.sparse import csr_matrix
+    from scipy.sparse import csr_array
 
 from .sample import SampleArray
 
@@ -60,7 +60,7 @@ def parafac_update(
 
 def anndata_to_list(X_in: anndata.AnnData) -> list[SampleArray]:
     assert X_in.X is not None
-    X_mat = cast("np.ndarray | csr_matrix", X_in.X)
+    X_mat = cast("np.ndarray | csr_array", X_in.X)
     sgIndex = cast("np.ndarray", X_in.obs["condition_unique_idxs"].to_numpy(dtype=int))
 
     if "means" in X_in.var:

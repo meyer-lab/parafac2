@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_array
 
 from ..sample import SampleArray, sample_array
 
@@ -16,7 +16,7 @@ def test_sample_array_matmul(sparse: bool):
     means = rng.normal(size=15).astype(np.float32)
     centered = raw - means
 
-    mat = csr_matrix(raw) if sparse else raw
+    mat = csr_array(raw) if sparse else raw
     sa = SampleArray(mat, means)
 
     assert sa.shape == (20, 15)
