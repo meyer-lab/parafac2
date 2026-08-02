@@ -12,6 +12,8 @@ dependencies = [
     "tensorly>=0.8.1",
     "tqdm>=4.68",
     "anndata>=0.12",
+    "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "cupy; sys_platform != 'darwin'",
 ]
 
 [dependency-groups]

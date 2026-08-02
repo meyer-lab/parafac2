@@ -5,6 +5,26 @@ from scipy.sparse import csr_array
 from ..sample import SampleArray, sample_array
 
 
+def _check_backend_available(backend: str) -> bool:
+    if backend == "cpu":
+        return True
+    elif backend == "mlx":
+        try:
+            import mlx.core  # noqa: F401
+
+            return True
+        except ImportError:
+            return False
+    elif backend == "cupy":
+        try:
+            import cupy  # noqa: F401
+
+            return True
+        except ImportError:
+            return False
+    return False
+
+
 def test_sample_array_alias():
     assert sample_array is SampleArray
 
@@ -23,8 +43,9 @@ def test_sample_array_matmul(sparse: bool):
     assert len(sa) == 20
     assert sa.ndim == 2
 
-    # Test toarray
+    # Test toarray and norm_sq
     np.testing.assert_allclose(sa.toarray(), centered, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(sa.norm_sq(), np.sum(centered**2), rtol=1e-5, atol=1e-5)
 
     # Test left matmul (2D and 1D)
     rhs2 = rng.normal(size=(15, 5)).astype(np.float32)
@@ -39,3 +60,45 @@ def test_sample_array_matmul(sparse: bool):
 
     lhs1 = rng.normal(size=20).astype(np.float32)
     np.testing.assert_allclose(lhs1 @ sa, lhs1 @ centered, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+@pytest.mark.parametrize("backend", ["cpu", "mlx", "cupy"])
+def test_backend_equivalence(sparse: bool, backend: str):
+    if not _check_backend_available(backend):
+        pytest.skip(f"Backend '{backend}' is not installed.")
+
+    rng = np.random.default_rng(42)
+    raw = rng.normal(size=(20, 15)).astype(np.float32)
+    means = rng.normal(size=15).astype(np.float32)
+    centered = raw - means
+
+    mat = csr_array(raw) if sparse else raw
+    sa = SampleArray(mat, means)
+
+    rhs2 = rng.normal(size=(15, 5)).astype(np.float32)
+    rhs1 = rng.normal(size=15).astype(np.float32)
+    lhs2 = rng.normal(size=(4, 20)).astype(np.float32)
+    lhs1 = rng.normal(size=20).astype(np.float32)
+
+    res_matmul2 = sa.__matmul__(rhs2, backend=backend)
+    res_matmul1 = sa.__matmul__(rhs1, backend=backend)
+    res_rmatmul2 = sa.__rmatmul__(lhs2, backend=backend)
+    res_rmatmul1 = sa.__rmatmul__(lhs1, backend=backend)
+
+    # Verify against CPU centered reference
+    np.testing.assert_allclose(res_matmul2, centered @ rhs2, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(res_matmul1, centered @ rhs1, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(res_rmatmul2, lhs2 @ centered, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(res_rmatmul1, lhs1 @ centered, rtol=1e-5, atol=1e-5)
+
+    # Compare directly against CPU backend output
+    cpu_matmul2 = sa.__matmul__(rhs2, backend="cpu")
+    cpu_matmul1 = sa.__matmul__(rhs1, backend="cpu")
+    cpu_rmatmul2 = sa.__rmatmul__(lhs2, backend="cpu")
+    cpu_rmatmul1 = sa.__rmatmul__(lhs1, backend="cpu")
+
+    np.testing.assert_allclose(res_matmul2, cpu_matmul2, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(res_matmul1, cpu_matmul1, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(res_rmatmul2, cpu_rmatmul2, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(res_rmatmul1, cpu_rmatmul1, rtol=1e-5, atol=1e-5)
