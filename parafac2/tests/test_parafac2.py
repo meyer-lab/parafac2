@@ -288,3 +288,55 @@ def test_parafac2_l1_regularization():
 
     # Also check that it's different from the unregularized result
     assert not np.allclose(C_reg, C_default, rtol=1e-3, atol=1e-3)
+
+
+def test_store_pf2():
+    """Test storing PARAFAC2 results into an AnnData object."""
+    from ..parafac2 import store_pf2
+
+    shapes = [(10, 15), (12, 15)]
+    rank = 3
+    rng = np.random.default_rng(42)
+
+    X_list = [rng.normal(size=shape) for shape in shapes]
+    X_ann = pf2_to_anndata(X_list, sparse=False)
+
+    (w, f, p), _ = parafac2_nd(X_ann, rank=rank, n_iter_max=5, random_state=42)
+
+    stored_ann = store_pf2(X_ann, (w, f, p))
+
+    assert "Pf2_weights" in stored_ann.uns
+    assert "Pf2_A" in stored_ann.uns
+    assert "Pf2_B" in stored_ann.uns
+    assert "Pf2_C" in stored_ann.varm
+    assert "projections" in stored_ann.obsm
+    assert "weighted_projections" in stored_ann.obsm
+
+    assert stored_ann.obsm["projections"].shape == (22, rank)
+    assert stored_ann.obsm["weighted_projections"].shape == (22, rank)
+    assert stored_ann.obsm["projections"].dtype == np.float32
+    assert stored_ann.obsm["weighted_projections"].dtype == np.float32
+
+
+def test_anndata_to_list_no_means():
+    """Test anndata_to_list fallback when var['means'] is missing."""
+    raw = np.ones((10, 5))
+    adata = anndata.AnnData(raw)
+    adata.obs["condition_unique_idxs"] = np.array([0] * 5 + [1] * 5)
+
+    samples = anndata_to_list(adata)
+    assert len(samples) == 2
+    np.testing.assert_allclose(samples[0].means, np.zeros(5))
+
+
+def test_parafac_update_zero_denom():
+    """Test parafac_update with l1_c when denominator in coordinate descent is 0."""
+    from ..utils import parafac_update
+
+    rank = 2
+    factors = [np.ones((2, rank)), np.ones((rank, rank)), np.ones((5, rank))]
+    # All zero MTTKRP matrix forces denominator / rho to 0
+    mttkrp = np.zeros((5, rank))
+
+    updated_factors = parafac_update(factors, mttkrp, mode=2, l1_c=0.1)
+    np.testing.assert_allclose(updated_factors[2], np.zeros((5, rank)))

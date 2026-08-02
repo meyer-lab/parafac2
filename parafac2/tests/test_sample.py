@@ -98,3 +98,32 @@ def test_backend_equivalence(sparse: bool, backend: str):
     np.testing.assert_allclose(res_matmul1, cpu_matmul1, rtol=1e-5, atol=1e-5)
     np.testing.assert_allclose(res_rmatmul2, cpu_rmatmul2, rtol=1e-5, atol=1e-5)
     np.testing.assert_allclose(res_rmatmul1, cpu_rmatmul1, rtol=1e-5, atol=1e-5)
+
+
+def test_invalid_backend():
+    from ..sample import get_backend
+
+    with pytest.raises(ValueError, match="Unknown backend"):
+        get_backend("invalid_backend_name")
+
+
+def test_sample_array_dtype():
+    raw = np.ones((5, 5), dtype=np.float32)
+    means = np.zeros(5, dtype=np.float32)
+    sa = SampleArray(raw, means)
+    assert sa.dtype == np.float32
+
+
+def test_get_backend_cpu_fallback(monkeypatch):
+    from ..sample import get_backend
+
+    # Monkeypatch mlx and cupy imports to fail
+    monkeypatch.setattr(
+        "builtins.__import__",
+        lambda name, *args, **kwargs: (
+            (_ for _ in ()).throw(ImportError)
+            if name in ("mlx.core", "cupy")
+            else __import__(name, *args, **kwargs)
+        ),
+    )
+    assert get_backend() == "cpu"

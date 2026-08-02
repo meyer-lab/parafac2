@@ -25,11 +25,15 @@ def store_pf2(
     X.uns["Pf2_weights"] = parafac2_output[0]
     X.uns["Pf2_A"], X.uns["Pf2_B"], X.varm["Pf2_C"] = parafac2_output[1]
 
-    X.obsm["projections"] = np.zeros((X.shape[0], len(X.uns["Pf2_weights"])))
+    X.obsm["projections"] = np.zeros(
+        (X.shape[0], len(X.uns["Pf2_weights"])), dtype=np.float32
+    )
     for i, p in enumerate(parafac2_output[2]):
         X.obsm["projections"][sgIndex == i, :] = p
 
-    X.obsm["weighted_projections"] = X.obsm["projections"] @ X.uns["Pf2_B"]
+    X.obsm["weighted_projections"] = (X.obsm["projections"] @ X.uns["Pf2_B"]).astype(
+        np.float32, copy=False
+    )
 
     return X
 
