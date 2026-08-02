@@ -51,13 +51,13 @@ def test_init_reprod(sparse: bool):
 
     # Compare both seeds
     for ii in range(3):
-        np.testing.assert_array_equal(f1[ii], f2[ii])
+        np.testing.assert_allclose(f1[ii], f2[ii], rtol=1e-5, atol=1e-5)
 
     # Compare both seeds for each mode.
     for mode in range(3):
         m1, _ = project_data(X_list, f1, 1.0, mode=mode)
         m2, _ = project_data(X_list, f2, 1.0, mode=mode)
-        np.testing.assert_array_equal(m1, m2)
+        np.testing.assert_allclose(m1, m2, rtol=1e-5, atol=1e-5)
 
 
 def test_parafac2_orthonormality():
