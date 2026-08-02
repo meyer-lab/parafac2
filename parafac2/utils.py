@@ -1,13 +1,15 @@
 from collections.abc import Sequence
-from typing import Literal, cast, overload
+from typing import TYPE_CHECKING, cast
 
 import anndata
-import cupy as cp
 import numpy as np
-from cupyx.scipy import sparse as cupy_sparse
 from scipy.optimize import linear_sum_assignment
-from scipy.sparse import csr_matrix, issparse
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
+
+if TYPE_CHECKING:
+    from scipy.sparse import csr_matrix
+
+from .sample import SampleArray
 
 
 def parafac_update(
@@ -23,8 +25,7 @@ def parafac_update(
     This corresponds to Option 2: Sequential with reuse.
 
     All factors here are rank-sized (n_cond, rank), (rank, rank), or
-    (n_genes, rank), so this runs on the CPU with numpy: none of these
-    matrices are large enough for GPU dispatch overhead to pay off.
+    (n_genes, rank).
     """
     rank = factors[0].shape[1]
 
@@ -57,72 +58,39 @@ def parafac_update(
     return factors
 
 
-def anndata_to_list(X_in: anndata.AnnData) -> list[np.ndarray | csr_matrix]:
-    # Index dataset to a list of conditions on host CPU memory to avoid
-    # staging all per-condition matrices in GPU VRAM at once.
+def anndata_to_list(X_in: anndata.AnnData) -> list[SampleArray]:
+    assert X_in.X is not None
+    X_mat = cast("np.ndarray | csr_matrix", X_in.X)
     sgIndex = cast("np.ndarray", X_in.obs["condition_unique_idxs"].to_numpy(dtype=int))
+
+    if "means" in X_in.var:
+        means = X_in.var["means"].to_numpy()
+    else:
+        means = np.zeros(X_in.shape[1])
 
     X_list = []
     for i in range(np.amax(sgIndex) + 1):
-        slice_mat = X_in.X[sgIndex == i]
-        if issparse(slice_mat):
-            X_list.append(csr_matrix(slice_mat, dtype=np.float32))
-        else:
-            X_list.append(np.array(slice_mat, dtype=np.float32))
+        slice_mat = X_mat[sgIndex == i]
+        X_list.append(SampleArray(slice_mat, means))
 
     return X_list
 
 
-@overload
 def project_data(
-    X_list: Sequence[cp.ndarray | np.ndarray | cupy_sparse.csr_matrix | csr_matrix],
-    means: np.ndarray,
-    factors: list[np.ndarray],
-    norm_X_sq: float,
-    mode: int,
-    return_projections: Literal[True],
-) -> list[np.ndarray]: ...
-
-
-@overload
-def project_data(
-    X_list: Sequence[cp.ndarray | np.ndarray | cupy_sparse.csr_matrix | csr_matrix],
-    means: np.ndarray,
-    factors: list[np.ndarray],
-    norm_X_sq: float,
-    mode: int,
-    return_projections: Literal[False] = False,
-) -> tuple[np.ndarray, float]: ...
-
-
-def project_data(
-    X_list: Sequence[cp.ndarray | np.ndarray | cupy_sparse.csr_matrix | csr_matrix],
-    means: np.ndarray,
+    X_list: Sequence[SampleArray],
     factors: list[np.ndarray],
     norm_X_sq: float,
     mode: int,
     return_projections: bool = False,
-) -> list[np.ndarray] | tuple[np.ndarray, float]:
+):
     """
     Project each condition's data onto the current factors and accumulate the
     MTTKRP for the requested mode.
-
-    Only the two operations that touch the full per-cell data matrices
-    (`mat @ lhs` and `proj.T @ mat`) run on the GPU -- profiling showed these
-    are ~10-30x faster on GPU and dominate runtime at realistic data scale.
-    Everything else here is bounded by `rank` (or is a single-shot batched
-    eigh), so it runs on the CPU with numpy: at rank~20 the fixed overhead of
-    dispatching hundreds of tiny per-condition GPU kernels is far larger than
-    the actual FLOPs, and numpy is both simpler and faster for these.
     """
     A, B, C = factors
     CtC = C.T @ C
-    assert CtC.dtype == np.float64
 
     norm_sq_err = norm_X_sq
-
-    means = np.asarray(means, dtype=np.float32)
-    mean_C = (means @ C).ravel()  # (rank,): precompute once
 
     rank = B.shape[0]
     n_cond = len(X_list)
@@ -131,82 +99,41 @@ def project_data(
     # Hoist loop-invariant matmuls
     BtB = B.T @ B  # (rank, rank)
 
-    sizes = [mat.shape[0] for mat in X_list]
-    bounds = np.cumsum([0, *sizes])
-
-    # ---- Pass 1: compute M_i = mat_i @ lhs_i - mean_term_i for every
-    # condition. lhs/mean_term are rank-sized (CPU), but `mat` is the large
-    # per-cell data matrix, so the multiply itself runs on the GPU. Batch the
-    # host<->device transfers into a single call each way.
-    # (n_cond, n_genes, rank)
+    # ---- Pass 1: compute M_i = mat_i @ lhs_i for every condition
     lhs_all = np.einsum("ik,gk,rk->igr", A, C, B, optimize=True)
-    mean_term_all = np.einsum("ik,k,rk->ir", A, mean_C, B, optimize=True)
 
-    lhs_all_gpu = cp.asarray(lhs_all)
-    mean_term_all_gpu = cp.asarray(mean_term_all)
+    M_list = [mat @ lhs_all[i] for i, mat in enumerate(X_list)]
 
-    M_chunks_gpu = []
-    for i, mat in enumerate(X_list):
-        if isinstance(mat, cp.ndarray):
-            mat_gpu = mat
-        elif isinstance(mat, cupy_sparse.spmatrix):
-            mat_gpu = mat
-        elif issparse(mat):
-            mat_gpu = cupy_sparse.csr_matrix(mat, dtype=cp.float32)
-        else:
-            mat_gpu = cp.array(mat, dtype=cp.float32)
-        M_chunks_gpu.append(mat_gpu @ lhs_all_gpu[i] - mean_term_all_gpu[i])
-        del mat_gpu
-
-    M_all = cp.asnumpy(cp.concatenate(M_chunks_gpu, axis=0)).astype(np.float64)
-    M_list = [M_all[bounds[i] : bounds[i + 1]] for i in range(n_cond)]
-
-    # ---- Small per-condition linear algebra (rank x rank), entirely CPU.
-    proj_list: list[np.ndarray] = []
-    for M_f64 in M_list:
-        G = M_f64.T @ M_f64  # (rank, rank) float64
+    # ---- Small per-condition linear algebra (rank x rank)
+    proj_list = []
+    for M in M_list:
+        G = M.T @ M  # (rank, rank)
         _, V = np.linalg.eigh(G)
-        MV = M_f64 @ V  # ≈ U @ S @ D, orthogonal columns
+        MV = M @ V  # ≈ U @ S @ D, orthogonal columns
         col_norms = np.linalg.norm(MV, axis=0, keepdims=True)
         safe_norms = np.where(col_norms > 1e-10, col_norms, 1.0)
-        proj = ((MV / safe_norms) @ V.T).astype(np.float32)  # D cancels → U @ Vh
+        proj = (MV / safe_norms) @ V.T  # D cancels → U @ Vh
         proj_list.append(proj)
 
     if return_projections:
         return proj_list
 
-    # ---- Pass 2: proj_slice_i = proj_i.T @ mat_i, again the large-data
-    # matmul runs on GPU, batched transfer back to host.
-    proj_all_gpu = [cp.asarray(p) for p in proj_list]
-    proj_slice_chunks_gpu = []
-    for i, mat in enumerate(X_list):
-        if isinstance(mat, cp.ndarray):
-            mat_gpu = mat
-        elif isinstance(mat, cupy_sparse.spmatrix):
-            mat_gpu = mat
-        elif issparse(mat):
-            mat_gpu = cupy_sparse.csr_matrix(mat, dtype=cp.float32)
-        else:
-            mat_gpu = cp.array(mat, dtype=cp.float32)
-        proj_slice_chunks_gpu.append(proj_all_gpu[i].T @ mat_gpu)  # (rank, n_genes)
-        del mat_gpu
-
-    proj_slice_all = cp.asnumpy(cp.stack(proj_slice_chunks_gpu, axis=0))
+    # ---- Pass 2: proj_slice_i = proj_i.T @ mat_i
+    proj_slice_all = np.stack(
+        [p.T @ mat for p, mat in zip(proj_list, X_list, strict=True)],
+        axis=0,
+    )
 
     # Allocate the single mttkrp buffer for the requested mode
     if mode == 0:
-        mttkrp = np.zeros((n_cond, rank), dtype=np.float32)
+        mttkrp = np.zeros((n_cond, rank))
     elif mode == 1:
-        mttkrp = np.zeros((rank, rank), dtype=np.float32)
+        mttkrp = np.zeros((rank, rank))
     else:
-        mttkrp = np.zeros((n_genes, rank), dtype=np.float32)
+        mttkrp = np.zeros((n_genes, rank))
 
     for i in range(n_cond):
-        proj = proj_list[i]
-
-        # Account for centering
-        centering = np.outer(np.sum(proj, axis=0), means)
-        proj_slice = proj_slice_all[i] - centering
+        proj_slice = proj_slice_all[i]
 
         B_i_inner = A[i][:, np.newaxis] * BtB * A[i]
         psc = proj_slice @ C  # (rank, rank); needed for error + modes 0,1

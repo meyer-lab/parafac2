@@ -3,7 +3,6 @@ Test the data import.
 """
 
 import anndata
-import cupy as cp
 import numpy as np
 import pytest
 from scipy.sparse import csr_array
@@ -12,7 +11,8 @@ from tensorly.parafac2_tensor import parafac2_to_slices
 from tensorly.random import random_parafac2
 
 from ..parafac2 import parafac2_init, parafac2_nd
-from ..utils import project_data
+from ..sample import SampleArray
+from ..utils import anndata_to_list, project_data
 
 
 def pf2_to_anndata(X_list, sparse=False):
@@ -39,14 +39,10 @@ def test_init_reprod(sparse: bool):
     X_reprod: list[np.ndarray] = random_parafac2(pf2shape_reprod, rank=3, full=True)
 
     X_ann = pf2_to_anndata(X_reprod, sparse=sparse)
-    means = X_ann.var["means"].to_numpy()
+    X_list = anndata_to_list(X_ann)
 
-    # parafac2_init touches the full per-cell data (the actual GPU
-    # bottleneck), so it still expects GPU-resident condition matrices.
-    X_list = [cp.array(x) for x in X_reprod]
-
-    f1, _ = parafac2_init(X_list, means, rank=3, random_state=1)
-    f2, _ = parafac2_init(X_list, means, rank=3, random_state=1)
+    f1, _ = parafac2_init(X_list, rank=3, random_state=1)
+    f2, _ = parafac2_init(X_list, rank=3, random_state=1)
 
     # assert sizes
     assert f1[0].shape == (len(pf2shape_reprod), 3)
@@ -57,12 +53,10 @@ def test_init_reprod(sparse: bool):
     for ii in range(3):
         np.testing.assert_array_equal(f1[ii], f2[ii])
 
-    # Compare both seeds for each mode. project_data only needs GPU for the
-    # large per-cell GEMMs and accepts plain numpy condition matrices too,
-    # converting internally as needed.
+    # Compare both seeds for each mode.
     for mode in range(3):
-        m1, _ = project_data(X_reprod, means, f1, 1.0, mode=mode)
-        m2, _ = project_data(X_reprod, means, f2, 1.0, mode=mode)
+        m1, _ = project_data(X_list, f1, 1.0, mode=mode)
+        m2, _ = project_data(X_list, f2, 1.0, mode=mode)
         np.testing.assert_array_equal(m1, m2)
 
 
@@ -202,10 +196,12 @@ def test_pf2_r2x():
 
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
 
-    _, errCMF = project_data(X, np.zeros((1, X[0].shape[1])), f, norm_tensor, mode=0)
+    means = np.zeros(X[0].shape[1])
+    X_samples = [SampleArray(x, means) for x in X]
+
+    _, errCMF = project_data(X_samples, f, norm_tensor, mode=0)
     p = project_data(
-        X,
-        np.zeros((1, X[0].shape[1])),
+        X_samples,
         f,
         norm_tensor,
         mode=0,
@@ -230,18 +226,22 @@ def test_pf2_proj_centering():
 
     norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))
 
+    means_zero = np.zeros(300)
+    X_samples_zero = [SampleArray(xx, means_zero) for xx in X_pf]
+
     projected_X, norm_sq_err = project_data(
-        X_pf, np.zeros((1, 300)), factors, norm_X_sq, mode=0
+        X_samples_zero, factors, norm_X_sq, mode=0
     )
 
     np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
 
     # De-mean since we aim to subtract off the means
     means = np.random.randn(X_pf[0].shape[1])  # noqa: NPY002
-    X_pf = [xx + means for xx in X_pf]
+    X_pf_mean = [xx + means for xx in X_pf]
+    X_samples_mean = [SampleArray(xx, means) for xx in X_pf_mean]
 
     projected_X_mean, norm_sq_err_centered = project_data(
-        X_pf, means, factors, norm_X_sq, mode=0
+        X_samples_mean, factors, norm_X_sq, mode=0
     )
 
     np.testing.assert_allclose(projected_X, projected_X_mean, rtol=1.0e-4, atol=1.0e-4)

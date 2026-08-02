@@ -11,7 +11,6 @@ dependencies = [
     "scipy>=1.18",
     "tensorly>=0.8.1",
     "tqdm>=4.68",
-    "cupy-cuda12x[ctk]>=14",
     "anndata>=0.12",
 ]
 
