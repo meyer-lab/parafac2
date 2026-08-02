@@ -1,15 +1,12 @@
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 
 import anndata
-import cupy as cp
 import numpy as np
-from cupyx.scipy import sparse as cupy_sparse
-from scipy.linalg import eigh
-from scipy.sparse import csr_matrix, issparse
 from tqdm import tqdm
 
+from .sample import SampleArray
 from .utils import (
     anndata_to_list,
     parafac_update,
@@ -28,69 +25,75 @@ def store_pf2(
     X.uns["Pf2_weights"] = parafac2_output[0]
     X.uns["Pf2_A"], X.uns["Pf2_B"], X.varm["Pf2_C"] = parafac2_output[1]
 
-    X.obsm["projections"] = np.zeros((X.shape[0], len(X.uns["Pf2_weights"])))
+    X.obsm["projections"] = np.zeros(
+        (X.shape[0], len(X.uns["Pf2_weights"])), dtype=np.float32
+    )
     for i, p in enumerate(parafac2_output[2]):
         X.obsm["projections"][sgIndex == i, :] = p
 
-    X.obsm["weighted_projections"] = X.obsm["projections"] @ X.uns["Pf2_B"]
+    X.obsm["weighted_projections"] = (X.obsm["projections"] @ X.uns["Pf2_B"]).astype(
+        np.float32, copy=False
+    )
 
     return X
 
 
 def parafac2_init(
-    X_in: list[np.ndarray | csr_matrix],
-    means: np.ndarray,
-    rank: int,
-    random_state: int | None = None,  # noqa: ARG001
+    X_in: Sequence[SampleArray],
+    rank: int = 3,
+    random_state: int | np.random.Generator | None = None,
+    n_oversamples: int = 10,
+    n_iter: int = 2,
 ) -> tuple[list[np.ndarray], float]:
     """
-    Compute the dataset covariance matrix across all conditions and perform an
-    eigendecomposition on CPU to initialize factors.
+    Compute initial factors using randomized SVD directly performed on
+    the sequence of SampleArray objects without copying full raw data.
     """
-    # Index dataset to a list of conditions
-    n_cond = len(X_in)
-    n_genes: int = X_in[0].shape[1]
-    means = means.ravel()
-
-    # Calculate covariance matrix while preserving sparsity
-    cov_matrix = np.zeros((n_genes, n_genes), dtype=np.float64)
-    axis0_sum = np.zeros(n_genes, dtype=np.float64)
-    total_rows = 0
-
-    for X_cond in X_in:
-        if isinstance(X_cond, cp.ndarray):
-            cov_matrix += cp.asnumpy(X_cond.T @ X_cond)
-            axis0_sum += cp.asnumpy(X_cond.sum(axis=0)).ravel()
-        elif isinstance(X_cond, cupy_sparse.spmatrix):
-            cov_matrix += cp.asnumpy((X_cond.T @ X_cond).toarray())
-            axis0_sum += cp.asnumpy(X_cond.sum(axis=0)).ravel()
-        elif issparse(X_cond):
-            cov_matrix += (X_cond.T @ X_cond).toarray()
-            axis0_sum += np.asarray(X_cond.sum(axis=0)).ravel()
-        else:
-            cov_matrix += X_cond.T @ X_cond
-            axis0_sum += np.asarray(X_cond.sum(axis=0)).ravel()
-
-        total_rows += X_cond.shape[0]
-
-    cov_matrix -= np.outer(means, axis0_sum)
-    cov_matrix -= np.outer(axis0_sum, means)
-    cov_matrix += total_rows * np.outer(means, means)
-
-    # Calculate the norm using the covariance matrix
-    norm_tensor = np.trace(cov_matrix)
-
-    # Compute the top-`rank` eigenvectors of the covariance matrix
-    eigenvals, eigenvecs = eigh(
-        cov_matrix, subset_by_index=[n_genes - rank, n_genes - 1]
+    rng = (
+        random_state
+        if isinstance(random_state, np.random.Generator)
+        else np.random.default_rng(random_state)
     )
-    # Sort in descending order of eigenvalues
-    idx = np.argsort(eigenvals)[::-1]
-    eigenvecs = eigenvecs[:, idx]
 
-    # Take the top 'rank' eigenvectors as initial C
-    factors = [np.ones((n_cond, rank)), np.eye(rank), eigenvecs[:, :rank]]
-    return factors, float(norm_tensor)
+    n_cond = len(X_in)
+    n_genes = X_in[0].shape[1]
+    sizes = [x.shape[0] for x in X_in]
+    bounds = np.cumsum([0, *sizes])
+
+    norm_tensor = float(sum(x.norm_sq() for x in X_in))
+
+    l_dim = min(n_genes, rank + n_oversamples)
+
+    Omega = rng.normal(size=(n_genes, l_dim)).astype(np.float64)
+    Y_chunks = [x @ Omega for x in X_in]
+    Y = np.concatenate(Y_chunks, axis=0)
+
+    for _ in range(n_iter):
+        Q, _ = np.linalg.qr(Y, mode="reduced")
+        Z = np.zeros((n_genes, l_dim), dtype=np.float64)
+        for i in range(n_cond):
+            Q_i = Q[bounds[i] : bounds[i + 1], :]
+            Z += (Q_i.T @ X_in[i]).T
+        Q_z, _ = np.linalg.qr(Z, mode="reduced")
+        Y_chunks = [x @ Q_z for x in X_in]
+        Y = np.concatenate(Y_chunks, axis=0)
+
+    Q, _ = np.linalg.qr(Y, mode="reduced")
+
+    B = np.zeros((l_dim, n_genes), dtype=np.float64)
+    for i in range(n_cond):
+        Q_i = Q[bounds[i] : bounds[i + 1], :]
+        B += Q_i.T @ X_in[i]
+
+    _, _, vh = np.linalg.svd(B, full_matrices=False)
+    C = vh[:rank, :].T.astype(np.float64)
+
+    factors = [
+        np.ones((n_cond, rank), dtype=np.float64),
+        np.eye(rank, dtype=np.float64),
+        C,
+    ]
+    return factors, norm_tensor
 
 
 def parafac2_nd(
@@ -99,11 +102,11 @@ def parafac2_nd(
     n_iter_max: int = 100,
     tol: float = 1e-6,
     random_state: int | None = None,
-    callback: Callable[[int, float, list], None] | None = None,
+    callback: Callable[[int, float, list[np.ndarray]], None] | None = None,
     l1_c: float = 0.0,
     max_iter_cd: int = 100,
     tol_cd: float = 1e-5,
-) -> tuple[tuple, float]:
+) -> tuple[tuple[np.ndarray, list[np.ndarray], list[np.ndarray]], float]:
     r"""The same interface as regular PARAFAC2."""
     # Verbose if this is not an automated build
     verbose = "CI" not in os.environ
@@ -116,14 +119,9 @@ def parafac2_nd(
 
     X_list = anndata_to_list(X_in)
 
-    if "means" in X_in.var:
-        means = X_in.var["means"].to_numpy()
-    else:
-        means = np.zeros((1, X_in.shape[1]))
+    factors, norm_tensor = parafac2_init(X_list, rank, random_state)
 
-    factors, norm_tensor = parafac2_init(X_list, means, rank, random_state)
-
-    mttkrp, err = project_data(X_list, means, factors, norm_tensor, mode=0)
+    mttkrp, err = project_data(X_list, factors, norm_tensor, mode=0)
     errs = [err]
 
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=0.5)
@@ -142,14 +140,14 @@ def parafac2_nd(
                 tol_cd=tol_cd,
             )
             mttkrp, err = project_data(
-                X_list, means, factors, norm_tensor, mode=(mode + 1) % len(factors)
+                X_list, factors, norm_tensor, mode=(mode + 1) % len(factors)
             )
 
         # Estimate error with line search
         factors_ls = [
             factors_old[ii] + (factors[ii] - factors_old[ii]) * jump for ii in range(3)
         ]
-        _, err_ls = project_data(X_list, means, factors_ls, norm_tensor, mode=0)
+        _, err_ls = project_data(X_list, factors_ls, norm_tensor, mode=0)
 
         if l1_c > 0.0:
             obj = 0.5 * err + l1_c * float(np.sum(np.abs(factors[2])))
@@ -182,7 +180,7 @@ def parafac2_nd(
 
     R2X = 1 - errs[-1]
     projections: list[np.ndarray] = project_data(
-        X_list, means, factors, norm_tensor, mode=0, return_projections=True
+        X_list, factors, norm_tensor, mode=0, return_projections=True
     )
 
     # Standardize the results and return

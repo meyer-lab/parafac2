@@ -9,8 +9,8 @@
 For each condition `i`, the polar factor was computed as:
 
 ```python
-lhs = (A[i] * C) @ B.T           # (n_genes, rank)
-M   = mat @ lhs - means @ lhs    # (n_cells, rank) — center by global mean
+lhs = (A[i] * C) @ B.T  # (n_genes, rank)
+M = mat @ lhs - means @ lhs  # (n_cells, rank) — center by global mean
 U, _, Vh = cp.linalg.svd(M, full_matrices=False)
 proj = U @ Vh
 ```
@@ -20,16 +20,16 @@ The SVD of an `(n_cells, rank)` matrix through cuSOLVER has high per-call overhe
 ## New approach: Gram matrix + column normalization
 
 ```python
-mean_C = means @ C                # (1, rank) — precomputed once outside the loop
+mean_C = means @ C  # (1, rank) — precomputed once outside the loop
 
 # per condition:
-lhs  = (A[i] * C) @ B.T
-M    = mat @ lhs - cp.array((A[i] * mean_C) @ B.T, dtype=cp.float32)
+lhs = (A[i] * C) @ B.T
+M = mat @ lhs - cp.array((A[i] * mean_C) @ B.T, dtype=cp.float32)
 M_f64 = M.astype(cp.float64)
-G    = M_f64.T @ M_f64            # (rank, rank) float64 Gram matrix
-_, V = cp.linalg.eigh(G)          # right singular vectors
-MV   = M_f64 @ V                  # columns ≈ U_svd · S · D  (D = diagonal ±1)
-col_norms  = cp.linalg.norm(MV, axis=0, keepdims=True)
+G = M_f64.T @ M_f64  # (rank, rank) float64 Gram matrix
+_, V = cp.linalg.eigh(G)  # right singular vectors
+MV = M_f64 @ V  # columns ≈ U_svd · S · D  (D = diagonal ±1)
+col_norms = cp.linalg.norm(MV, axis=0, keepdims=True)
 safe_norms = cp.where(col_norms > 1e-10, col_norms, 1.0)
 proj = ((MV / safe_norms) @ V.T).astype(cp.float32)
 ```

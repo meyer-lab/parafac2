@@ -5,7 +5,24 @@
 `parafac2` contains the code for the PARAFAC2 (Pf2) python package, a tensor decomposition technique, used in our study for identifying variation patterns in single-cell populations across conditions. In our [study](https://www.biorxiv.org/content/10.1101/2024.07.29.605698v1.article-info), we discovered association patterns to specific cell populations, genes, and experimental conditions in both a drug perturbational study and systemic lupus erythematosus cohort study. 
 
 ## Installation
-To add it to your Python package, add the following line to requirements.txt and remake venv: `git+https://github.com/meyer-lab/parafac2.git@main`
+To install `parafac2` with standard CPU support:
+```bash
+pip install git+https://github.com/meyer-lab/parafac2.git@main
+```
+
+### Hardware Acceleration (`[gpu]` extra)
+`parafac2` supports hardware acceleration (`mlx` on Apple Silicon and `cupy` on Linux/Windows) via a single `gpu` extra:
+
+```bash
+pip install "parafac2[gpu] @ git+https://github.com/meyer-lab/parafac2.git@main"
+```
+
+Or with `uv`:
+```bash
+uv sync --extra gpu
+```
+
+Environment markers automatically select `mlx` when on macOS Apple Silicon, and `cupy` on other platforms. If no GPU backend is installed, `parafac2` falls back to CPU computation seamlessly.
 
 ## Input Requirements
 1. Your AnnData object must include an observations `column condition_unique_idxs` that is a 0-indexed array of which condition each cell is derived from along with the cell barcode 

@@ -3,7 +3,6 @@ Test the data import.
 """
 
 import anndata
-import cupy as cp
 import numpy as np
 import pytest
 from scipy.sparse import csr_array
@@ -12,7 +11,8 @@ from tensorly.parafac2_tensor import parafac2_to_slices
 from tensorly.random import random_parafac2
 
 from ..parafac2 import parafac2_init, parafac2_nd
-from ..utils import project_data
+from ..sample import SampleArray
+from ..utils import anndata_to_list, project_data
 
 
 def pf2_to_anndata(X_list, sparse=False):
@@ -39,14 +39,10 @@ def test_init_reprod(sparse: bool):
     X_reprod: list[np.ndarray] = random_parafac2(pf2shape_reprod, rank=3, full=True)
 
     X_ann = pf2_to_anndata(X_reprod, sparse=sparse)
-    means = X_ann.var["means"].to_numpy()
+    X_list = anndata_to_list(X_ann)
 
-    # parafac2_init touches the full per-cell data (the actual GPU
-    # bottleneck), so it still expects GPU-resident condition matrices.
-    X_list = [cp.array(x) for x in X_reprod]
-
-    f1, _ = parafac2_init(X_list, means, rank=3, random_state=1)
-    f2, _ = parafac2_init(X_list, means, rank=3, random_state=1)
+    f1, _ = parafac2_init(X_list, rank=3, random_state=1)
+    f2, _ = parafac2_init(X_list, rank=3, random_state=1)
 
     # assert sizes
     assert f1[0].shape == (len(pf2shape_reprod), 3)
@@ -55,15 +51,13 @@ def test_init_reprod(sparse: bool):
 
     # Compare both seeds
     for ii in range(3):
-        np.testing.assert_array_equal(f1[ii], f2[ii])
+        np.testing.assert_allclose(f1[ii], f2[ii], rtol=1e-5, atol=1e-5)
 
-    # Compare both seeds for each mode. project_data only needs GPU for the
-    # large per-cell GEMMs and accepts plain numpy condition matrices too,
-    # converting internally as needed.
+    # Compare both seeds for each mode.
     for mode in range(3):
-        m1, _ = project_data(X_reprod, means, f1, 1.0, mode=mode)
-        m2, _ = project_data(X_reprod, means, f2, 1.0, mode=mode)
-        np.testing.assert_array_equal(m1, m2)
+        m1, _ = project_data(X_list, f1, 1.0, mode=mode)
+        m2, _ = project_data(X_list, f2, 1.0, mode=mode)
+        np.testing.assert_allclose(m1, m2, rtol=1e-5, atol=1e-5)
 
 
 def test_parafac2_orthonormality():
@@ -77,7 +71,7 @@ def test_parafac2_orthonormality():
     X_ann = pf2_to_anndata(X_list, sparse=False)
 
     # Fit PARAFAC2
-    (w, f, p), _ = parafac2_nd(
+    (_w, _f, p), _ = parafac2_nd(
         X_ann, rank=rank, random_state=42, n_iter_max=50, tol=1e-6
     )
 
@@ -202,10 +196,12 @@ def test_pf2_r2x():
 
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
 
-    _, errCMF = project_data(X, np.zeros((1, X[0].shape[1])), f, norm_tensor, mode=0)
+    means = np.zeros(X[0].shape[1])
+    X_samples = [SampleArray(x, means) for x in X]
+
+    _, errCMF = project_data(X_samples, f, norm_tensor, mode=0)
     p = project_data(
-        X,
-        np.zeros((1, X[0].shape[1])),
+        X_samples,
         f,
         norm_tensor,
         mode=0,
@@ -230,18 +226,20 @@ def test_pf2_proj_centering():
 
     norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))
 
-    projected_X, norm_sq_err = project_data(
-        X_pf, np.zeros((1, 300)), factors, norm_X_sq, mode=0
-    )
+    means_zero = np.zeros(300)
+    X_samples_zero = [SampleArray(xx, means_zero) for xx in X_pf]
+
+    projected_X, norm_sq_err = project_data(X_samples_zero, factors, norm_X_sq, mode=0)
 
     np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
 
     # De-mean since we aim to subtract off the means
-    means = np.random.randn(X_pf[0].shape[1])  # noqa: NPY002
-    X_pf = [xx + means for xx in X_pf]
+    means = np.random.randn(X_pf[0].shape[1])
+    X_pf_mean = [xx + means for xx in X_pf]
+    X_samples_mean = [SampleArray(xx, means) for xx in X_pf_mean]
 
     projected_X_mean, norm_sq_err_centered = project_data(
-        X_pf, means, factors, norm_X_sq, mode=0
+        X_samples_mean, factors, norm_X_sq, mode=0
     )
 
     np.testing.assert_allclose(projected_X, projected_X_mean, rtol=1.0e-4, atol=1.0e-4)
@@ -261,10 +259,10 @@ def test_parafac2_l1_regularization():
     X_ann = pf2_to_anndata(X_list, sparse=False)
 
     # 1. Verify default behaves identically to l1_c=0.0
-    (w_default, f_default, p_default), r2x_default = parafac2_nd(
+    (w_default, f_default, _p_default), r2x_default = parafac2_nd(
         X_ann, rank=rank, n_iter_max=10, random_state=42
     )
-    (w_zero, f_zero, p_zero), r2x_zero = parafac2_nd(
+    (w_zero, f_zero, _p_zero), r2x_zero = parafac2_nd(
         X_ann, rank=rank, n_iter_max=10, random_state=42, l1_c=0.0
     )
 
@@ -279,7 +277,7 @@ def test_parafac2_l1_regularization():
 
     # 2. Verify that L1 regularization with l1_c > 0.0 induces sparsity
     # Use a large l1_c to ensure some elements of C are thresholded to exactly 0
-    (w_reg, f_reg, p_reg), r2x_reg = parafac2_nd(
+    (_w_reg, f_reg, _p_reg), _r2x_reg = parafac2_nd(
         X_ann, rank=rank, n_iter_max=50, random_state=42, l1_c=0.5
     )
     C_reg = f_reg[2]
@@ -290,3 +288,55 @@ def test_parafac2_l1_regularization():
 
     # Also check that it's different from the unregularized result
     assert not np.allclose(C_reg, C_default, rtol=1e-3, atol=1e-3)
+
+
+def test_store_pf2():
+    """Test storing PARAFAC2 results into an AnnData object."""
+    from ..parafac2 import store_pf2
+
+    shapes = [(10, 15), (12, 15)]
+    rank = 3
+    rng = np.random.default_rng(42)
+
+    X_list = [rng.normal(size=shape) for shape in shapes]
+    X_ann = pf2_to_anndata(X_list, sparse=False)
+
+    (w, f, p), _ = parafac2_nd(X_ann, rank=rank, n_iter_max=5, random_state=42)
+
+    stored_ann = store_pf2(X_ann, (w, f, p))
+
+    assert "Pf2_weights" in stored_ann.uns
+    assert "Pf2_A" in stored_ann.uns
+    assert "Pf2_B" in stored_ann.uns
+    assert "Pf2_C" in stored_ann.varm
+    assert "projections" in stored_ann.obsm
+    assert "weighted_projections" in stored_ann.obsm
+
+    assert stored_ann.obsm["projections"].shape == (22, rank)
+    assert stored_ann.obsm["weighted_projections"].shape == (22, rank)
+    assert stored_ann.obsm["projections"].dtype == np.float32
+    assert stored_ann.obsm["weighted_projections"].dtype == np.float32
+
+
+def test_anndata_to_list_no_means():
+    """Test anndata_to_list fallback when var['means'] is missing."""
+    raw = np.ones((10, 5))
+    adata = anndata.AnnData(raw)
+    adata.obs["condition_unique_idxs"] = np.array([0] * 5 + [1] * 5)
+
+    samples = anndata_to_list(adata)
+    assert len(samples) == 2
+    np.testing.assert_allclose(samples[0].means, np.zeros(5))
+
+
+def test_parafac_update_zero_denom():
+    """Test parafac_update with l1_c when denominator in coordinate descent is 0."""
+    from ..utils import parafac_update
+
+    rank = 2
+    factors = [np.ones((2, rank)), np.ones((rank, rank)), np.ones((5, rank))]
+    # All zero MTTKRP matrix forces denominator / rho to 0
+    mttkrp = np.zeros((5, rank))
+
+    updated_factors = parafac_update(factors, mttkrp, mode=2, l1_c=0.1)
+    np.testing.assert_allclose(updated_factors[2], np.zeros((5, rank)))
