@@ -98,11 +98,11 @@ def parafac2_nd(
     n_iter_max: int = 100,
     tol: float = 1e-6,
     random_state: int | None = None,
-    callback: Callable[[int, float, list], None] | None = None,
+    callback: Callable[[int, float, list[np.ndarray]], None] | None = None,
     l1_c: float = 0.0,
     max_iter_cd: int = 100,
     tol_cd: float = 1e-5,
-) -> tuple[tuple, float]:
+) -> tuple[tuple[np.ndarray, list[np.ndarray], list[np.ndarray]], float]:
     r"""The same interface as regular PARAFAC2."""
     # Verbose if this is not an automated build
     verbose = "CI" not in os.environ

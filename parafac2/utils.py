@@ -19,7 +19,7 @@ def parafac_update(
     l1_c: float = 0.0,
     max_iter_cd: int = 100,
     tol_cd: float = 1e-5,
-):
+) -> list[np.ndarray]:
     """
     Perform sequential PARAFAC updates for all modes using pre-computed MTTKRPs.
     This corresponds to Option 2: Sequential with reuse.
@@ -82,7 +82,7 @@ def project_data(
     norm_X_sq: float,
     mode: int,
     return_projections: bool = False,
-):
+) -> tuple[np.ndarray, float] | list[np.ndarray]:
     """
     Project each condition's data onto the current factors and accumulate the
     MTTKRP for the requested mode.

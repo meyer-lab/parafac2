@@ -1,4 +1,4 @@
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 from scipy.sparse import csr_array, issparse
@@ -34,7 +34,7 @@ def get_backend(backend: str | None = None) -> str:
     return "cpu"
 
 
-def _get_mlx_csr_spmm_kernel():
+def _get_mlx_csr_spmm_kernel() -> Any:
     global _MLX_CSR_SPMM_KERNEL
     if _MLX_CSR_SPMM_KERNEL is None:
         import mlx.core as mx
@@ -63,7 +63,7 @@ def _get_mlx_csr_spmm_kernel():
     return _MLX_CSR_SPMM_KERNEL
 
 
-def _get_mlx_csr_atomic_rspmm_kernel():
+def _get_mlx_csr_atomic_rspmm_kernel() -> Any:
     global _MLX_CSR_ATOMIC_RSPMM_KERNEL
     if _MLX_CSR_ATOMIC_RSPMM_KERNEL is None:
         import mlx.core as mx
@@ -242,7 +242,7 @@ class SampleArray:
 
     __array_priority__ = 1000
 
-    def __init__(self, mat: np.ndarray | csr_array, means: np.ndarray):
+    def __init__(self, mat: np.ndarray | csr_array, means: np.ndarray) -> None:
         if issparse(mat):
             self.mat = csr_array(mat)
         else:
@@ -254,7 +254,7 @@ class SampleArray:
         return self.mat.shape
 
     @property
-    def dtype(self):
+    def dtype(self) -> np.dtype:
         return self.mat.dtype
 
     @property
@@ -317,6 +317,3 @@ class SampleArray:
         else:
             return res_arr - np.sum(lhs) * self.means
 
-
-# Alias for snake_case class reference
-sample_array = SampleArray

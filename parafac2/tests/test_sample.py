@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from scipy.sparse import csr_array
 
-from ..sample import SampleArray, sample_array
+from ..sample import SampleArray
 
 
 def _check_backend_available(backend: str) -> bool:
@@ -23,10 +23,6 @@ def _check_backend_available(backend: str) -> bool:
         except ImportError:
             return False
     return False
-
-
-def test_sample_array_alias():
-    assert sample_array is SampleArray
 
 
 @pytest.mark.parametrize("sparse", [False, True])
