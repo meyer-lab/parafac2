@@ -96,7 +96,7 @@ def _matmul_mlx(mat: np.ndarray | csr_array, rhs: np.ndarray) -> np.ndarray:
     import mlx.core as mx
 
     orig_dtype = getattr(rhs, "dtype", mat.dtype)
-    M, N = mat.shape
+    M, _N = mat.shape
 
     if issparse(mat):
         mat_csr = cast("csr_array", mat)
@@ -264,9 +264,7 @@ class SampleArray:
     def toarray(self) -> np.ndarray:
         """Return the dense, mean-centered matrix."""
         dense = (
-            cast("csr_array", self.mat).toarray()
-            if issparse(self.mat)
-            else self.mat
+            cast("csr_array", self.mat).toarray() if issparse(self.mat) else self.mat
         )
         return dense - self.means
 

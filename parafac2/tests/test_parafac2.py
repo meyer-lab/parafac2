@@ -71,7 +71,7 @@ def test_parafac2_orthonormality():
     X_ann = pf2_to_anndata(X_list, sparse=False)
 
     # Fit PARAFAC2
-    (w, f, p), _ = parafac2_nd(
+    (_w, _f, p), _ = parafac2_nd(
         X_ann, rank=rank, random_state=42, n_iter_max=50, tol=1e-6
     )
 
@@ -229,14 +229,12 @@ def test_pf2_proj_centering():
     means_zero = np.zeros(300)
     X_samples_zero = [SampleArray(xx, means_zero) for xx in X_pf]
 
-    projected_X, norm_sq_err = project_data(
-        X_samples_zero, factors, norm_X_sq, mode=0
-    )
+    projected_X, norm_sq_err = project_data(X_samples_zero, factors, norm_X_sq, mode=0)
 
     np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
 
     # De-mean since we aim to subtract off the means
-    means = np.random.randn(X_pf[0].shape[1])  # noqa: NPY002
+    means = np.random.randn(X_pf[0].shape[1])
     X_pf_mean = [xx + means for xx in X_pf]
     X_samples_mean = [SampleArray(xx, means) for xx in X_pf_mean]
 
@@ -261,10 +259,10 @@ def test_parafac2_l1_regularization():
     X_ann = pf2_to_anndata(X_list, sparse=False)
 
     # 1. Verify default behaves identically to l1_c=0.0
-    (w_default, f_default, p_default), r2x_default = parafac2_nd(
+    (w_default, f_default, _p_default), r2x_default = parafac2_nd(
         X_ann, rank=rank, n_iter_max=10, random_state=42
     )
-    (w_zero, f_zero, p_zero), r2x_zero = parafac2_nd(
+    (w_zero, f_zero, _p_zero), r2x_zero = parafac2_nd(
         X_ann, rank=rank, n_iter_max=10, random_state=42, l1_c=0.0
     )
 
@@ -279,7 +277,7 @@ def test_parafac2_l1_regularization():
 
     # 2. Verify that L1 regularization with l1_c > 0.0 induces sparsity
     # Use a large l1_c to ensure some elements of C are thresholded to exactly 0
-    (w_reg, f_reg, p_reg), r2x_reg = parafac2_nd(
+    (_w_reg, f_reg, _p_reg), _r2x_reg = parafac2_nd(
         X_ann, rank=rank, n_iter_max=50, random_state=42, l1_c=0.5
     )
     C_reg = f_reg[2]
