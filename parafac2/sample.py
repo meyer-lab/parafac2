@@ -297,7 +297,8 @@ class SampleArray:
         else:
             res_arr = self.mat @ rhs
 
-        return res_arr - (self.means @ rhs)
+        res_arr -= self.means @ rhs
+        return res_arr
 
     def __rmatmul__(self, lhs: np.ndarray, backend: str | None = None) -> np.ndarray:
         """
@@ -315,6 +316,7 @@ class SampleArray:
 
         if lhs.ndim == 2:
             row_sums = np.sum(lhs, axis=1)
-            return res_arr - np.outer(row_sums, self.means)
+            res_arr -= np.outer(row_sums, self.means)
         else:
-            return res_arr - np.sum(lhs) * self.means
+            res_arr -= np.sum(lhs) * self.means
+        return res_arr
