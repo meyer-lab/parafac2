@@ -99,14 +99,14 @@ def project_data(
     # Hoist loop-invariant matmuls
     BtB = B.T @ B  # (rank, rank)
 
-    # ---- Pass 1: compute M_i = mat_i @ lhs_i for every condition
-    lhs_all = np.einsum("ik,gk,rk->igr", A, C, B, optimize=True)
-
-    M_list = [mat @ lhs_all[i] for i, mat in enumerate(X_list)]
+    # ---- Pass 1: compute W_i = mat_i @ C for every condition
+    W_list = [mat @ C for mat in X_list]
 
     # ---- Small per-condition linear algebra (rank x rank)
     proj_list = []
-    for M in M_list:
+    for i, W in enumerate(W_list):
+        T_i = (B * A[i]).T  # (rank, rank)
+        M = W @ T_i
         G = M.T @ M  # (rank, rank)
         _, V = np.linalg.eigh(G)
         MV = M @ V  # ≈ U @ S @ D, orthogonal columns
@@ -118,12 +118,6 @@ def project_data(
     if return_projections:
         return proj_list
 
-    # ---- Pass 2: proj_slice_i = proj_i.T @ mat_i
-    proj_slice_all = np.stack(
-        [p.T @ mat for p, mat in zip(proj_list, X_list, strict=True)],
-        axis=0,
-    )
-
     # Allocate the single mttkrp buffer for the requested mode
     if mode == 0:
         mttkrp = np.zeros((n_cond, rank))
@@ -133,20 +127,20 @@ def project_data(
         mttkrp = np.zeros((n_genes, rank))
 
     for i in range(n_cond):
-        proj_slice = proj_slice_all[i]
-
+        psc = proj_list[i].T @ W_list[i]  # (rank, rank) dense product
         B_i_inner = A[i][:, np.newaxis] * BtB * A[i]
-        psc = proj_slice @ C  # (rank, rank); needed for error + modes 0,1
-
-        norm_sq_err -= 2.0 * np.einsum("r,jr,jr->", A[i], B, psc)
-        norm_sq_err += (B_i_inner * CtC).sum()
 
         if mode == 0:
             mttkrp[i] = np.sum(psc * B, axis=0)
         elif mode == 1:
             mttkrp += psc * A[i]
         else:
-            mttkrp += (proj_slice.T @ B) * A[i]
+            # Mode 2 updates C
+            H_i = proj_list[i] @ (B * A[i])
+            mttkrp += (H_i.T @ X_list[i]).T
+
+        norm_sq_err -= 2.0 * np.einsum("r,jr,jr->", A[i], B, psc)
+        norm_sq_err += (B_i_inner * CtC).sum()
 
     return mttkrp, float(norm_sq_err)
 
