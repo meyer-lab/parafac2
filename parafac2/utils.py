@@ -126,33 +126,26 @@ def project_data(
     else:
         mttkrp = np.zeros((n_genes, rank))
 
-    if mode == 2:
-        # Mode 2 updates C and requires proj_slice_i = proj_i.T @ mat_i
-        proj_slice_all = np.stack(
-            [p.T @ mat for p, mat in zip(proj_list, X_list, strict=True)],
-            axis=0,
-        )
-        for i in range(n_cond):
-            proj_slice = proj_slice_all[i]
+    for i in range(n_cond):
+        if mode == 2:
+            # Mode 2 updates C and requires proj_slice_i = proj_i.T @ mat_i
+            proj_slice = proj_list[i].T @ X_list[i]
             B_i_inner = A[i][:, np.newaxis] * BtB * A[i]
             psc = proj_slice @ C  # (rank, rank)
 
-            norm_sq_err -= 2.0 * np.einsum("r,jr,jr->", A[i], B, psc)
-            norm_sq_err += (B_i_inner * CtC).sum()
             mttkrp += (proj_slice.T @ B) * A[i]
-    else:
-        # Modes 0 and 1 only need psc = proj_i.T @ (mat_i @ C) = proj_i.T @ W_i
-        for i in range(n_cond):
+        else:
+            # Modes 0 and 1 only need psc = proj_i.T @ (mat_i @ C) = proj_i.T @ W_i
             psc = proj_list[i].T @ W_list[i]  # (rank, rank) dense product
             B_i_inner = A[i][:, np.newaxis] * BtB * A[i]
-
-            norm_sq_err -= 2.0 * np.einsum("r,jr,jr->", A[i], B, psc)
-            norm_sq_err += (B_i_inner * CtC).sum()
 
             if mode == 0:
                 mttkrp[i] = np.sum(psc * B, axis=0)
             elif mode == 1:
                 mttkrp += psc * A[i]
+
+        norm_sq_err -= 2.0 * np.einsum("r,jr,jr->", A[i], B, psc)
+        norm_sq_err += (B_i_inner * CtC).sum()
 
     return mttkrp, float(norm_sq_err)
 
