@@ -248,50 +248,6 @@ def test_pf2_proj_centering():
     )
 
 
-def test_parafac2_l1_regularization():
-    """Test that L1 regularization on factor C works, induces sparsity,
-    and is disabled by default."""
-    shapes = [(20, 25) for _ in range(3)]
-    rank = 2
-    rng = np.random.default_rng(42)
-
-    X_list = [rng.normal(size=shape) for shape in shapes]
-    X_ann = pf2_to_anndata(X_list, sparse=False)
-
-    # 1. Verify default behaves identically to l1_c=0.0
-    (w_default, f_default, _p_default), r2x_default = parafac2_nd(
-        X_ann, rank=rank, n_iter_max=10, random_state=42
-    )
-    (w_zero, f_zero, _p_zero), r2x_zero = parafac2_nd(
-        X_ann, rank=rank, n_iter_max=10, random_state=42, l1_c=0.0
-    )
-
-    np.testing.assert_allclose(w_default, w_zero, rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(r2x_default, r2x_zero, rtol=1e-6, atol=1e-6)
-    for fd, fz in zip(f_default, f_zero, strict=True):
-        np.testing.assert_allclose(fd, fz, rtol=1e-6, atol=1e-6)
-
-    # Verify that without L1 regularization, factor C is dense
-    C_default = f_default[2]
-    assert np.all(C_default != 0.0)
-
-    # 2. Verify that L1 regularization with l1_c > 0.0 induces sparsity
-    # l1_c thresholds C in its own units (see parafac_update), so the right
-    # scale depends on the data; 0.005 induces some exact zeros on this
-    # fixture without collapsing a whole component to zero.
-    (_w_reg, f_reg, _p_reg), _r2x_reg = parafac2_nd(
-        X_ann, rank=rank, n_iter_max=50, random_state=42, l1_c=0.005
-    )
-    C_reg = f_reg[2]
-
-    # Check that there are zero elements in C
-    num_zeros = np.sum(C_reg == 0.0)
-    assert num_zeros > 0, "L1 regularization did not induce any zeros in C"
-
-    # Also check that it's different from the unregularized result
-    assert not np.allclose(C_reg, C_default, rtol=1e-3, atol=1e-3)
-
-
 def test_store_pf2():
     """Test storing PARAFAC2 results into an AnnData object."""
     from ..parafac2 import store_pf2
@@ -331,50 +287,19 @@ def test_anndata_to_list_no_means():
     np.testing.assert_allclose(samples[0].means, np.zeros(5))
 
 
-def test_parafac_update_l1_c_scale_invariant():
-    """l1_c must threshold C in its own units, not the pre-division MTTKRP
-    residual, so the same l1_c produces the same absolute shrinkage and zero
-    pattern regardless of a component's Gram-diagonal "energy" (~||A_j||^2 *
-    ||B_j||^2). Otherwise a low-energy component gets disproportionately
-    shrunk relative to a high-energy one at the same l1_c, which can collapse
-    a whole column to zero (and singularize the next factor's Gram matrix)
-    well before a high-energy column is touched at all.
-    """
+def test_parafac_update():
+    """Test parafac_update computes standard least-squares update."""
     from ..utils import parafac_update
 
     rank = 2
-    # A, B chosen (both diagonal) so v = (A^T A) * (B^T B) is diagonal too,
-    # decoupling the two components' coordinate-descent updates exactly, with
-    # very different Gram-diagonal energy: v[0,0]=36, v[1,1]=1.
-    A = np.array([[3.0, 0.0], [0.0, 1.0]])
-    B = np.array([[2.0, 0.0], [0.0, 1.0]])
+    A = np.array([[1.0, 0.0], [0.0, 1.0]])
+    B = np.array([[2.0, 0.0], [0.0, 3.0]])
     C = np.zeros((5, rank))
     factors = [A, B, C]
 
-    target = np.array([0.5, -0.3, 0.2, 0.1, -0.05])
-    # mttkrp columns scaled by each component's own v[j,j], so the
-    # unconstrained least-squares solution (mttkrp[:, j] / v[j, j]) is
-    # identical (== target) for both components despite the 36x energy gap.
-    mttkrp = np.stack([36.0 * target, 1.0 * target], axis=1)
-
-    updated = parafac_update(factors, mttkrp, mode=2, l1_c=0.15)
-    C_updated = updated[2]
-
-    expected = np.sign(target) * np.maximum(0.0, np.abs(target) - 0.15)
-    np.testing.assert_allclose(C_updated[:, 0], expected, atol=1e-8)
-    np.testing.assert_allclose(C_updated[:, 1], expected, atol=1e-8)
-    # Both components should have the same zero pattern despite the energy gap.
-    assert np.array_equal(C_updated[:, 0] == 0.0, C_updated[:, 1] == 0.0)
-
-
-def test_parafac_update_zero_denom():
-    """Test parafac_update with l1_c when denominator in coordinate descent is 0."""
-    from ..utils import parafac_update
-
-    rank = 2
-    factors = [np.ones((2, rank)), np.ones((rank, rank)), np.ones((5, rank))]
-    # All zero MTTKRP matrix forces denominator / rho to 0
-    mttkrp = np.zeros((5, rank))
-
-    updated_factors = parafac_update(factors, mttkrp, mode=2, l1_c=0.1)
-    np.testing.assert_allclose(updated_factors[2], np.zeros((5, rank)))
+    mttkrp = np.array(
+        [[4.0, 9.0], [8.0, 18.0], [12.0, 27.0], [16.0, 36.0], [20.0, 45.0]]
+    )
+    updated = parafac_update(factors, mttkrp, mode=2)
+    expected_C = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0], [4.0, 4.0], [5.0, 5.0]])
+    np.testing.assert_allclose(updated[2], expected_C)
