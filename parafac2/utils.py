@@ -19,6 +19,7 @@ def parafac_update(
     l1_c: float = 0.0,
     max_iter_cd: int = 100,
     tol_cd: float = 1e-5,
+    orth_b: bool = False,
 ) -> list[np.ndarray]:
     """
     Perform sequential PARAFAC updates for all modes using pre-computed MTTKRPs.
@@ -27,6 +28,11 @@ def parafac_update(
     All factors here are rank-sized (n_cond, rank), (rank, rank), or
     (n_genes, rank).
     """
+    if mode == 1 and orth_b:
+        u, _, vh = np.linalg.svd(mttkrp, full_matrices=False)
+        factors[1] = u @ vh
+        return factors
+
     rank = factors[0].shape[1]
 
     # Compute Gram matrix product using current factors
