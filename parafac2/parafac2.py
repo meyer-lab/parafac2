@@ -106,6 +106,7 @@ def parafac2_nd(
     l1_c: float = 0.0,
     max_iter_cd: int = 100,
     tol_cd: float = 1e-5,
+    orth_b: bool = False,
 ) -> tuple[tuple[np.ndarray, list[np.ndarray], list[np.ndarray]], float]:
     r"""The same interface as regular PARAFAC2."""
     # Verbose if this is not an automated build
@@ -138,6 +139,7 @@ def parafac2_nd(
                 l1_c=l1_c,
                 max_iter_cd=max_iter_cd,
                 tol_cd=tol_cd,
+                orth_b=orth_b,
             )
             mttkrp, err = project_data(
                 X_list, factors, norm_tensor, mode=(mode + 1) % len(factors)
@@ -147,6 +149,10 @@ def parafac2_nd(
         factors_ls = [
             factors_old[ii] + (factors[ii] - factors_old[ii]) * jump for ii in range(3)
         ]
+        if orth_b:
+            u, _, vh = np.linalg.svd(factors_ls[1], full_matrices=False)
+            factors_ls[1] = u @ vh
+
         _, err_ls = project_data(X_list, factors_ls, norm_tensor, mode=0)
 
         if l1_c > 0.0:

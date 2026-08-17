@@ -378,3 +378,114 @@ def test_parafac_update_zero_denom():
 
     updated_factors = parafac_update(factors, mttkrp, mode=2, l1_c=0.1)
     np.testing.assert_allclose(updated_factors[2], np.zeros((5, rank)))
+
+
+def test_parafac_update_orth_b():
+    """Test that parafac_update with orth_b=True produces an orthonormal B matrix."""
+    from ..utils import parafac_update
+
+    rank = 3
+    rng = np.random.default_rng(42)
+    factors = [
+        rng.normal(size=(4, rank)),
+        rng.normal(size=(rank, rank)),
+        rng.normal(size=(10, rank)),
+    ]
+    mttkrp = rng.normal(size=(rank, rank))
+
+    updated = parafac_update(factors, mttkrp, mode=1, orth_b=True)
+    B = updated[1]
+
+    # Check that B is orthogonal
+    np.testing.assert_allclose(B.T @ B, np.eye(rank), atol=1e-12)
+    np.testing.assert_allclose(B @ B.T, np.eye(rank), atol=1e-12)
+
+    # Check that it matches SVD of MTTKRP
+    u, _, vh = np.linalg.svd(mttkrp, full_matrices=False)
+    np.testing.assert_allclose(B, u @ vh, atol=1e-12)
+
+
+def test_parafac2_orth_b_orthonormality():
+    """Test that parafac2_nd with orth_b=True returns an orthonormal B matrix."""
+    shapes = [(30, 40) for _ in range(5)]
+    rank = 3
+    rng = np.random.default_rng(42)
+
+    X_list = [rng.normal(size=shape) for shape in shapes]
+    X_ann = pf2_to_anndata(X_list, sparse=False)
+
+    (_w, f, p), _ = parafac2_nd(
+        X_ann, rank=rank, random_state=42, n_iter_max=50, tol=1e-6, orth_b=True
+    )
+    B = f[1]
+    np.testing.assert_allclose(B.T @ B, np.eye(rank), atol=1e-5)
+    np.testing.assert_allclose(B @ B.T, np.eye(rank), atol=1e-5)
+
+    for P_k in p:
+        np.testing.assert_allclose(P_k.T @ P_k, np.eye(rank), atol=1e-5)
+
+
+def test_parafac2_orth_b_monotonicity():
+    """Test that reconstruction error decreases monotonically with orth_b=True."""
+    shapes = [(30, 45) for _ in range(4)]
+    rank = 3
+    rng = np.random.default_rng(12)
+
+    X_list = [rng.normal(size=shape) for shape in shapes]
+    X_ann = pf2_to_anndata(X_list, sparse=False)
+
+    errors = []
+
+    def callback(_iteration, error, _factors):
+        errors.append(error)
+
+    parafac2_nd(
+        X_ann,
+        rank=rank,
+        random_state=12,
+        n_iter_max=50,
+        tol=1e-10,
+        callback=callback,
+        orth_b=True,
+    )
+
+    for i in range(1, len(errors)):
+        delta = errors[i - 1] - errors[i]
+        assert delta >= -1e-6, (
+            f"Error increased at iteration {i}: {errors[i - 1]} -> {errors[i]} "
+            f"(delta={delta})"
+        )
+
+
+def test_parafac2_orth_b_exact_recovery():
+    """Test exact recovery of synthetic data with orthogonal B."""
+    shapes = [(25, 35) for _ in range(5)]
+    rank = 3
+    rng = np.random.default_rng(100)
+
+    A = rng.uniform(0.5, 1.5, size=(len(shapes), rank))
+    B, _ = np.linalg.qr(rng.normal(size=(rank, rank)))
+    C = rng.normal(size=(shapes[0][1], rank))
+
+    projections = []
+    for Ik, _ in shapes:
+        P = rng.normal(size=(Ik, rank))
+        Q, _ = np.linalg.qr(P)
+        projections.append(Q)
+
+    factors = [A, B, C]
+
+    X_slices = parafac2_to_slices((None, factors, projections))
+    X_ann = pf2_to_anndata(X_slices, sparse=False)
+
+    (w_fit, f_fit, p_fit), r2x = parafac2_nd(
+        X_ann, rank=rank, random_state=100, n_iter_max=150, tol=1e-7, orth_b=True
+    )
+
+    norm_X = np.sum([np.linalg.norm(x) ** 2 for x in X_slices])
+    rec_err = _parafac2_reconstruction_error(X_slices, (w_fit, f_fit, p_fit))
+    relative_err = rec_err / np.sqrt(norm_X)
+
+    assert r2x > 0.99
+    assert relative_err < 0.05
+    np.testing.assert_allclose(f_fit[1].T @ f_fit[1], np.eye(rank), atol=1e-5)
