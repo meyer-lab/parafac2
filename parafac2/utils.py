@@ -1,15 +1,30 @@
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, cast
 
-import anndata
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+from scipy.sparse import issparse
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 
 if TYPE_CHECKING:
     from scipy.sparse import csr_array
 
-from .sample import SampleArray
+
+def calc_norm_sq(X: "np.ndarray | csr_array", means: np.ndarray | None = None) -> float:
+    """Return the squared Frobenius norm of the mean-centered matrix."""
+    if means is None or np.all(means == 0):
+        if issparse(X):
+            return float(np.sum(X.data**2))
+        return float(np.sum(X**2))
+
+    means_arr = np.asarray(means).ravel()
+    if issparse(X):
+        mat_csr = cast("csr_array", X)
+        M = mat_csr.shape[0]
+        term1 = np.sum(mat_csr.data**2)
+        term2 = -2.0 * np.sum(mat_csr.data * means_arr[mat_csr.indices])
+        term3 = M * np.sum(means_arr**2)
+        return float(term1 + term2 + term3)
+    return float(np.sum((X - means_arr) ** 2))
 
 
 def parafac_update(
@@ -90,76 +105,62 @@ def parafac_update(
     return factors
 
 
-def anndata_to_list(X_in: anndata.AnnData) -> list[SampleArray]:
-    assert X_in.X is not None
-    X_mat = cast("np.ndarray | csr_array", X_in.X)
-    sgIndex = cast("np.ndarray", X_in.obs["condition_unique_idxs"].to_numpy(dtype=int))
-
-    if "means" in X_in.var:
-        means = X_in.var["means"].to_numpy()
-    else:
-        means = np.zeros(X_in.shape[1])
-
-    X_list = []
-    for i in range(np.amax(sgIndex) + 1):
-        slice_mat = X_mat[sgIndex == i]
-        X_list.append(SampleArray(slice_mat, means))
-
-    return X_list
-
-
 def project_data(
-    X_list: Sequence[SampleArray],
+    X: "np.ndarray | csr_array",
+    condition_unique_idxs: np.ndarray,
+    means: np.ndarray | None,
     factors: list[np.ndarray],
     norm_X_sq: float,
     mode: int,
     return_projections: bool = False,
+    cond_indices: list[np.ndarray] | None = None,
 ) -> tuple[np.ndarray, float] | list[np.ndarray]:
     """
     Project each condition's data onto the current factors and accumulate the
     MTTKRP for the requested mode.
     """
     A, B, C = factors
+    rank = B.shape[0]
+    n_cond = A.shape[0]
     CtC = C.T @ C
-
+    BtB = B.T @ B
     norm_sq_err = norm_X_sq
 
-    rank = B.shape[0]
-    n_cond = len(X_list)
-    n_genes = C.shape[0]
+    # Single GEMM for W = (X - 1 mu^T) @ C = X @ C - 1 (mu @ C)
+    W = X @ C
+    if means is not None:
+        W = W - (means @ C)
 
-    # Hoist loop-invariant matmuls
-    BtB = B.T @ B  # (rank, rank)
+    if cond_indices is None:
+        cond_indices = [
+            np.flatnonzero(condition_unique_idxs == i) for i in range(n_cond)
+        ]
 
-    # ---- Pass 1: compute W_i = mat_i @ C for every condition
-    W_list = [mat @ C for mat in X_list]
-
-    # ---- Small per-condition linear algebra (rank x rank)
-    proj_list = []
-    for i, W in enumerate(W_list):
-        T_i = (B * A[i]).T  # (rank, rank)
-        M = W @ T_i
-        G = M.T @ M  # (rank, rank)
-        _, V = np.linalg.eigh(G)
-        MV = M @ V  # ≈ U @ S @ D, orthogonal columns
-        col_norms = np.linalg.norm(MV, axis=0, keepdims=True)
-        safe_norms = np.where(col_norms > 1e-10, col_norms, 1.0)
-        proj = (MV / safe_norms) @ V.T  # D cancels → U @ Vh
-        proj_list.append(proj)
-
-    if return_projections:
-        return proj_list
-
-    # Allocate the single mttkrp buffer for the requested mode
     if mode == 0:
         mttkrp = np.zeros((n_cond, rank))
     elif mode == 1:
         mttkrp = np.zeros((rank, rank))
     else:
-        mttkrp = np.zeros((n_genes, rank))
+        H = np.empty((X.shape[0], rank), dtype=np.float64)
 
+    proj_list = []
     for i in range(n_cond):
-        psc = proj_list[i].T @ W_list[i]  # (rank, rank) dense product
+        idx_i = cond_indices[i]
+        W_i = W[idx_i]
+        T_i = (B * A[i]).T  # (rank, rank)
+        M = W_i @ T_i
+        G = M.T @ M  # (rank, rank)
+        _, V = np.linalg.eigh(G)
+        MV = M @ V  # ≈ U @ S @ D, orthogonal columns
+        col_norms = np.linalg.norm(MV, axis=0, keepdims=True)
+        safe_norms = np.where(col_norms > 1e-10, col_norms, 1.0)
+        proj = (MV / safe_norms) @ V.T  # D cancels -> U @ Vh
+        proj_list.append(proj)
+
+        if return_projections:
+            continue
+
+        psc = proj.T @ W_i  # (rank, rank) dense product
         B_i_inner = A[i][:, np.newaxis] * BtB * A[i]
 
         if mode == 0:
@@ -168,11 +169,18 @@ def project_data(
             mttkrp += psc * A[i]
         else:
             # Mode 2 updates C
-            H_i = proj_list[i] @ (B * A[i])
-            mttkrp += (H_i.T @ X_list[i]).T
+            H[idx_i] = proj @ (B * A[i])
 
         norm_sq_err -= 2.0 * np.einsum("r,jr,jr->", A[i], B, psc)
         norm_sq_err += (B_i_inner * CtC).sum()
+
+    if return_projections:
+        return proj_list
+
+    if mode == 2:
+        mttkrp = (H.T @ X).T
+        if means is not None:
+            mttkrp -= np.outer(means, np.sum(H, axis=0))
 
     return mttkrp, float(norm_sq_err)
 

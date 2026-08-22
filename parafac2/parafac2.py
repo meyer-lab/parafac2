@@ -1,14 +1,17 @@
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from copy import deepcopy
+from typing import TYPE_CHECKING, cast
 
 import anndata
 import numpy as np
 from tqdm import tqdm
 
-from .sample import SampleArray
+if TYPE_CHECKING:
+    from scipy.sparse import csr_array
+
 from .utils import (
-    anndata_to_list,
+    calc_norm_sq,
     parafac_update,
     project_data,
     standardize_pf2,
@@ -39,15 +42,17 @@ def store_pf2(
 
 
 def parafac2_init(
-    X_in: Sequence[SampleArray],
+    X: "np.ndarray | csr_array",
+    condition_unique_idxs: np.ndarray,
     rank: int = 3,
+    means: np.ndarray | None = None,
     random_state: int | np.random.Generator | None = None,
     n_oversamples: int = 10,
     n_iter: int = 2,
 ) -> tuple[list[np.ndarray], float]:
     """
     Compute initial factors using randomized SVD directly performed on
-    the sequence of SampleArray objects without copying full raw data.
+    the single input matrix X without copying raw data.
     """
     rng = (
         random_state
@@ -55,35 +60,35 @@ def parafac2_init(
         else np.random.default_rng(random_state)
     )
 
-    n_cond = len(X_in)
-    n_genes = X_in[0].shape[1]
-    sizes = [x.shape[0] for x in X_in]
-    bounds = np.cumsum([0, *sizes])
-
-    norm_tensor = float(sum(x.norm_sq() for x in X_in))
+    n_cond = int(np.amax(condition_unique_idxs)) + 1
+    n_genes = X.shape[1]
+    norm_tensor = calc_norm_sq(X, means)
 
     l_dim = min(n_genes, rank + n_oversamples)
 
     Omega = rng.normal(size=(n_genes, l_dim)).astype(np.float64)
-    Y_chunks = [x @ Omega for x in X_in]
-    Y = np.concatenate(Y_chunks, axis=0)
+    Y = (X @ Omega).astype(np.float64)
+    if means is not None:
+        Y -= (means @ Omega).astype(np.float64)
 
     for _ in range(n_iter):
         Q, _ = np.linalg.qr(Y, mode="reduced")
-        Z = np.zeros((n_genes, l_dim), dtype=np.float64)
-        for i in range(n_cond):
-            Q_i = Q[bounds[i] : bounds[i + 1], :]
-            Z += (Q_i.T @ X_in[i]).T
+        Z_T = (Q.T @ X).astype(np.float64)
+        if means is not None:
+            Q_sum = np.sum(Q, axis=0)
+            Z_T -= np.outer(Q_sum, means).astype(np.float64)
+        Z = Z_T.T
         Q_z, _ = np.linalg.qr(Z, mode="reduced")
-        Y_chunks = [x @ Q_z for x in X_in]
-        Y = np.concatenate(Y_chunks, axis=0)
+        Y = (X @ Q_z).astype(np.float64)
+        if means is not None:
+            Y -= (means @ Q_z).astype(np.float64)
 
     Q, _ = np.linalg.qr(Y, mode="reduced")
 
-    B = np.zeros((l_dim, n_genes), dtype=np.float64)
-    for i in range(n_cond):
-        Q_i = Q[bounds[i] : bounds[i + 1], :]
-        B += Q_i.T @ X_in[i]
+    B = (Q.T @ X).astype(np.float64)
+    if means is not None:
+        Q_sum = np.sum(Q, axis=0)
+        B -= np.outer(Q_sum, means).astype(np.float64)
 
     _, _, vh = np.linalg.svd(B, full_matrices=False)
     C = vh[:rank, :].T.astype(np.float64)
@@ -118,11 +123,25 @@ def parafac2_nd(
     beta_i = 0.05
     beta_i_bar = 1.0
 
-    X_list = anndata_to_list(X_in)
+    assert X_in.X is not None
+    X_mat = cast("np.ndarray | csr_array", X_in.X)
+    sgIndex = cast("np.ndarray", X_in.obs["condition_unique_idxs"].to_numpy(dtype=int))
 
-    factors, norm_tensor = parafac2_init(X_list, rank, random_state)
+    if "means" in X_in.var:
+        means = X_in.var["means"].to_numpy()
+    else:
+        means = np.zeros(X_in.shape[1])
 
-    mttkrp, err = project_data(X_list, factors, norm_tensor, mode=0)
+    n_cond = int(np.amax(sgIndex)) + 1
+    cond_indices = [np.flatnonzero(sgIndex == i) for i in range(n_cond)]
+
+    factors, norm_tensor = parafac2_init(
+        X_mat, sgIndex, rank=rank, means=means, random_state=random_state
+    )
+
+    mttkrp, err = project_data(
+        X_mat, sgIndex, means, factors, norm_tensor, mode=0, cond_indices=cond_indices
+    )
     errs = [err]
 
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=0.5)
@@ -142,7 +161,13 @@ def parafac2_nd(
                 orth_b=orth_b,
             )
             mttkrp, err = project_data(
-                X_list, factors, norm_tensor, mode=(mode + 1) % len(factors)
+                X_mat,
+                sgIndex,
+                means,
+                factors,
+                norm_tensor,
+                mode=(mode + 1) % len(factors),
+                cond_indices=cond_indices,
             )
 
         # Estimate error with line search
@@ -153,7 +178,15 @@ def parafac2_nd(
             u, _, vh = np.linalg.svd(factors_ls[1], full_matrices=False)
             factors_ls[1] = u @ vh
 
-        _, err_ls = project_data(X_list, factors_ls, norm_tensor, mode=0)
+        _, err_ls = project_data(
+            X_mat,
+            sgIndex,
+            means,
+            factors_ls,
+            norm_tensor,
+            mode=0,
+            cond_indices=cond_indices,
+        )
 
         if l1_c > 0.0:
             obj = 0.5 * err + l1_c * float(np.sum(np.abs(factors[2])))
@@ -185,8 +218,18 @@ def parafac2_nd(
             break
 
     R2X = 1 - errs[-1]
-    projections: list[np.ndarray] = project_data(
-        X_list, factors, norm_tensor, mode=0, return_projections=True
+    projections: list[np.ndarray] = cast(
+        "list[np.ndarray]",
+        project_data(
+            X_mat,
+            sgIndex,
+            means,
+            factors,
+            norm_tensor,
+            mode=0,
+            return_projections=True,
+            cond_indices=cond_indices,
+        ),
     )
 
     # Standardize the results and return

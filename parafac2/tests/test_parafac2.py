@@ -11,8 +11,7 @@ from tensorly.parafac2_tensor import parafac2_to_slices
 from tensorly.random import random_parafac2
 
 from ..parafac2 import parafac2_init, parafac2_nd
-from ..sample import SampleArray
-from ..utils import anndata_to_list, project_data
+from ..utils import calc_norm_sq, project_data
 
 
 def pf2_to_anndata(X_list, sparse=False):
@@ -39,10 +38,12 @@ def test_init_reprod(sparse: bool):
     X_reprod: list[np.ndarray] = random_parafac2(pf2shape_reprod, rank=3, full=True)
 
     X_ann = pf2_to_anndata(X_reprod, sparse=sparse)
-    X_list = anndata_to_list(X_ann)
+    X_mat = X_ann.X
+    cond_idxs = X_ann.obs["condition_unique_idxs"].to_numpy(dtype=int)
+    means = X_ann.var["means"].to_numpy()
 
-    f1, _ = parafac2_init(X_list, rank=3, random_state=1)
-    f2, _ = parafac2_init(X_list, rank=3, random_state=1)
+    f1, _ = parafac2_init(X_mat, cond_idxs, rank=3, means=means, random_state=1)
+    f2, _ = parafac2_init(X_mat, cond_idxs, rank=3, means=means, random_state=1)
 
     # assert sizes
     assert f1[0].shape == (len(pf2shape_reprod), 3)
@@ -55,8 +56,8 @@ def test_init_reprod(sparse: bool):
 
     # Compare both seeds for each mode.
     for mode in range(3):
-        m1, _ = project_data(X_list, f1, 1.0, mode=mode)
-        m2, _ = project_data(X_list, f2, 1.0, mode=mode)
+        m1, _ = project_data(X_mat, cond_idxs, means, f1, 1.0, mode=mode)
+        m2, _ = project_data(X_mat, cond_idxs, means, f2, 1.0, mode=mode)
         np.testing.assert_allclose(m1, m2, rtol=1e-5, atol=1e-5)
 
 
@@ -197,11 +198,14 @@ def test_pf2_r2x():
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
 
     means = np.zeros(X[0].shape[1])
-    X_samples = [SampleArray(x, means) for x in X]
+    X_dense = np.concatenate(X, axis=0)
+    cond_idxs = np.concatenate([[i] * s[0] for i, s in enumerate(pf2shape)])
 
-    _, errCMF = project_data(X_samples, f, norm_tensor, mode=0)
+    _, errCMF = project_data(X_dense, cond_idxs, means, f, norm_tensor, mode=0)
     p = project_data(
-        X_samples,
+        X_dense,
+        cond_idxs,
+        means,
         f,
         norm_tensor,
         mode=0,
@@ -215,31 +219,33 @@ def test_pf2_r2x():
 
 def test_pf2_proj_centering():
     """Test that centering the matrix does not affect the results."""
+    shapes = [(25, 300) for _ in range(15)]
     _, factors, projections = random_parafac2(
-        shapes=[(25, 300) for _ in range(15)],
+        shapes=shapes,
         rank=3,
         normalise_factors=False,
         dtype=np.float64,
     )
 
     X_pf = parafac2_to_slices((None, factors, projections))
-
     norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))
 
     means_zero = np.zeros(300)
-    X_samples_zero = [SampleArray(xx, means_zero) for xx in X_pf]
+    X_dense = np.concatenate(X_pf, axis=0)
+    cond_idxs = np.concatenate([[i] * s[0] for i, s in enumerate(shapes)])
 
-    projected_X, norm_sq_err = project_data(X_samples_zero, factors, norm_X_sq, mode=0)
+    projected_X, norm_sq_err = project_data(
+        X_dense, cond_idxs, means_zero, factors, norm_X_sq, mode=0
+    )
 
     np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
 
     # De-mean since we aim to subtract off the means
     means = np.random.randn(X_pf[0].shape[1])
-    X_pf_mean = [xx + means for xx in X_pf]
-    X_samples_mean = [SampleArray(xx, means) for xx in X_pf_mean]
+    X_dense_mean = X_dense + means
 
     projected_X_mean, norm_sq_err_centered = project_data(
-        X_samples_mean, factors, norm_X_sq, mode=0
+        X_dense_mean, cond_idxs, means, factors, norm_X_sq, mode=0
     )
 
     np.testing.assert_allclose(projected_X, projected_X_mean, rtol=1.0e-4, atol=1.0e-4)
@@ -320,15 +326,14 @@ def test_store_pf2():
     assert stored_ann.obsm["weighted_projections"].dtype == np.float32
 
 
-def test_anndata_to_list_no_means():
-    """Test anndata_to_list fallback when var['means'] is missing."""
+def test_parafac2_no_means():
+    """Test parafac2_nd fallback when var['means'] is missing."""
     raw = np.ones((10, 5))
     adata = anndata.AnnData(raw)
     adata.obs["condition_unique_idxs"] = np.array([0] * 5 + [1] * 5)
 
-    samples = anndata_to_list(adata)
-    assert len(samples) == 2
-    np.testing.assert_allclose(samples[0].means, np.zeros(5))
+    (_w, f, _p), _r2x = parafac2_nd(adata, rank=2, n_iter_max=5)
+    assert len(f) == 3
 
 
 def test_parafac_update_l1_c_scale_invariant():
@@ -489,3 +494,60 @@ def test_parafac2_orth_b_exact_recovery():
     assert r2x > 0.99
     assert relative_err < 0.05
     np.testing.assert_allclose(f_fit[1].T @ f_fit[1], np.eye(rank), atol=1e-5)
+
+
+def test_calc_norm_sq():
+    """Test calc_norm_sq for dense and sparse with and without means."""
+    rng = np.random.default_rng(42)
+    raw = rng.normal(size=(30, 20)).astype(np.float64)
+    raw[rng.random(raw.shape) > 0.3] = 0.0
+    sparse_mat = csr_array(raw)
+
+    # Without means
+    norm_dense_0 = calc_norm_sq(raw)
+    norm_sparse_0 = calc_norm_sq(sparse_mat)
+    np.testing.assert_allclose(norm_dense_0, np.sum(raw**2))
+    np.testing.assert_allclose(norm_dense_0, norm_sparse_0)
+
+    # With means
+    means = rng.normal(size=20).astype(np.float64)
+    norm_dense_m = calc_norm_sq(raw, means)
+    norm_sparse_m = calc_norm_sq(sparse_mat, means)
+    expected_m = np.sum((raw - means) ** 2)
+    np.testing.assert_allclose(norm_dense_m, expected_m, rtol=1e-10)
+    np.testing.assert_allclose(norm_sparse_m, expected_m, rtol=1e-10)
+
+
+def test_project_data_sparse_dense_with_means():
+    """Test project_data produces identical results for sparse and dense with non-zero means."""
+    rng = np.random.default_rng(42)
+    shapes = [(20, 25) for _ in range(4)]
+    rank = 3
+
+    _w, factors, projections = random_parafac2(shapes, rank=rank, random_state=42)
+    X_slices = parafac2_to_slices((None, factors, projections))
+
+    means = rng.normal(size=25)
+    X_dense = np.concatenate([x + means for x in X_slices], axis=0)
+    X_sparse = csr_array(X_dense)
+    cond_idxs = np.concatenate([[i] * s[0] for i, s in enumerate(shapes)])
+    norm_sq = calc_norm_sq(X_dense, means)
+
+    for mode in range(3):
+        mtt_d, err_d = project_data(
+            X_dense, cond_idxs, means, factors, norm_sq, mode=mode
+        )
+        mtt_s, err_s = project_data(
+            X_sparse, cond_idxs, means, factors, norm_sq, mode=mode
+        )
+        np.testing.assert_allclose(mtt_d, mtt_s, rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(err_d, err_s, rtol=1e-5, atol=1e-5)
+
+    proj_d = project_data(
+        X_dense, cond_idxs, means, factors, norm_sq, mode=0, return_projections=True
+    )
+    proj_s = project_data(
+        X_sparse, cond_idxs, means, factors, norm_sq, mode=0, return_projections=True
+    )
+    for pd, ps in zip(proj_d, proj_s):
+        np.testing.assert_allclose(pd, ps, rtol=1e-5, atol=1e-5)
