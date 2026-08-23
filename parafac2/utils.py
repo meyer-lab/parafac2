@@ -27,6 +27,39 @@ def calc_norm_sq(X: "np.ndarray | csr_array", means: np.ndarray | None = None) -
     return float(np.sum((X - means_arr) ** 2))
 
 
+def calc_slice_norms(
+    X: "np.ndarray | csr_array",
+    means: np.ndarray | None,
+    condition_unique_idxs: np.ndarray,
+    n_cond: int,
+) -> np.ndarray:
+    """Return the per-condition Frobenius norm of the mean-centered slices."""
+    idxs = np.asarray(condition_unique_idxs)
+    counts = np.bincount(idxs, minlength=n_cond).astype(np.float64)
+
+    if issparse(X):
+        mat_csr = cast("csr_array", X)
+        group_of_nnz = np.repeat(idxs, np.diff(mat_csr.indptr))
+        sums_sq = np.bincount(
+            group_of_nnz, weights=mat_csr.data.astype(np.float64) ** 2, minlength=n_cond
+        )
+        if means is None or np.all(means == 0):
+            return np.sqrt(sums_sq)
+
+        means_arr = np.asarray(means).ravel()
+        cross = np.bincount(
+            group_of_nnz,
+            weights=mat_csr.data.astype(np.float64) * means_arr[mat_csr.indices],
+            minlength=n_cond,
+        )
+        mean_sq_total = np.sum(means_arr**2)
+        return np.sqrt(np.maximum(sums_sq - 2.0 * cross + counts * mean_sq_total, 0.0))
+
+    means_arr = np.asarray(means).ravel() if means is not None else 0.0
+    row_sums_sq = np.sum((np.asarray(X) - means_arr) ** 2, axis=1)
+    return np.sqrt(np.bincount(idxs, weights=row_sums_sq, minlength=n_cond))
+
+
 def parafac_update(
     factors: list[np.ndarray],
     mttkrp: np.ndarray,
@@ -59,10 +92,18 @@ def project_data(
     norm_X_sq: float,
     mode: int,
     return_projections: bool = False,
+    slice_weights: np.ndarray | None = None,
 ) -> tuple[np.ndarray, float] | list[np.ndarray]:
     """
     Project each condition's data onto the current factors and accumulate the
     MTTKRP for the requested mode.
+
+    ``slice_weights``, if given, is a per-condition scalar (e.g. an inverse
+    Frobenius norm) applied only to the small per-condition intermediates
+    that feed the MTTKRP accumulation. This rebalances how much each slice
+    contributes to the factor updates without touching or copying ``X``, and
+    without affecting the reported error (which is still computed from the
+    unweighted contributions).
     """
     A, B, C = factors
     rank = B.shape[0]
@@ -104,13 +145,15 @@ def project_data(
         m_i = np.sum(psc * B, axis=0)
         norm_sq_err -= 2.0 * float(np.dot(A[i], m_i))
 
+        w_i = 1.0 if slice_weights is None else slice_weights[i]
+
         if mode == 0:
-            mttkrp[i] = m_i
+            mttkrp[i] = m_i * w_i
         elif mode == 1:
-            mttkrp += psc * A[i]
+            mttkrp += psc * A[i] * w_i
         else:
             # Mode 2 updates C
-            H[cond_i] = proj @ (B * A[i])
+            H[cond_i] = proj @ (B * A[i]) * w_i
 
     if return_projections:
         return proj_list

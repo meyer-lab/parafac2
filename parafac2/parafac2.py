@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 from .utils import (
     calc_norm_sq,
+    calc_slice_norms,
     parafac_update,
     project_data,
     standardize_pf2,
@@ -110,8 +111,19 @@ def parafac2_nd(
     random_state: int | None = None,
     callback: Callable[[int, float, list[np.ndarray]], None] | None = None,
     backend: str | None = None,
+    normalize_slices: bool = False,
 ) -> tuple[tuple[np.ndarray, list[np.ndarray], list[np.ndarray]], float]:
-    r"""The same interface as regular PARAFAC2."""
+    r"""The same interface as regular PARAFAC2.
+
+    If ``normalize_slices`` is True, each condition's contribution to the
+    factor updates is rescaled by the inverse of its (mean-centered)
+    Frobenius norm. This prevents conditions with many more cells (or much
+    higher variance) from dominating the shared factors, e.g. the ``A``
+    matrix. The weighting is computed from small per-condition summary
+    statistics and applied to per-condition intermediates only, so ``X`` is
+    never copied or modified. The reported error/R2X are unaffected, since
+    they are still computed from the unweighted fit.
+    """
     # Verbose if this is not an automated build
     verbose = "CI" not in os.environ
 
@@ -125,6 +137,13 @@ def parafac2_nd(
         means = np.zeros(X_in.shape[1])
 
     norm_tensor = calc_norm_sq(X_mat, means)
+
+    slice_weights: np.ndarray | None = None
+    if normalize_slices:
+        n_cond = int(np.amax(sgIndex)) + 1
+        slice_norms = calc_slice_norms(X_mat, means, sgIndex, n_cond)
+        slice_weights = np.where(slice_norms > 1e-10, 1.0 / slice_norms, 1.0)
+
     X_raw = to_gpu(X_mat, backend=backend)
 
     factors, _ = parafac2_init(
@@ -136,7 +155,9 @@ def parafac2_nd(
         norm_tensor=norm_tensor,
     )
 
-    mttkrp, err = project_data(X_raw, sgIndex, means, factors, norm_tensor, mode=0)
+    mttkrp, err = project_data(
+        X_raw, sgIndex, means, factors, norm_tensor, mode=0, slice_weights=slice_weights
+    )
     errs = [err]
 
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=0.5)
@@ -154,6 +175,7 @@ def parafac2_nd(
                 factors,
                 norm_tensor,
                 mode=(mode + 1) % len(factors),
+                slice_weights=slice_weights,
             )
 
         errs.append(err / norm_tensor)
