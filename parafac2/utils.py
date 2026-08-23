@@ -5,8 +5,6 @@ from scipy.optimize import linear_sum_assignment
 from scipy.sparse import issparse
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 
-from .backend import matmul_raw, rmatmul_raw
-
 if TYPE_CHECKING:
     from scipy.sparse import csr_array
 
@@ -69,12 +67,12 @@ def project_data(
     A, B, C = factors
     rank = B.shape[0]
     n_cond = A.shape[0]
-    CtC = C.T @ C
-    BtB = B.T @ B
-    norm_sq_err = norm_X_sq
+
+    # Initialize error with full tensor contraction ||X||^2 + Tr(A^T A * B^T B * C^T C)
+    norm_sq_err = norm_X_sq + float(((A.T @ A) * (B.T @ B) * (C.T @ C)).sum())
 
     # Single GEMM for W = (X - 1 mu^T) @ C = X @ C - 1 (mu @ C)
-    W = matmul_raw(X, C)
+    W = X @ C
     if means is not None:
         W = W - (means @ C)
 
@@ -103,24 +101,22 @@ def project_data(
             continue
 
         psc = proj.T @ W_i  # (rank, rank) dense product
-        B_i_inner = A[i][:, np.newaxis] * BtB * A[i]
+        m_i = np.sum(psc * B, axis=0)
+        norm_sq_err -= 2.0 * float(np.dot(A[i], m_i))
 
         if mode == 0:
-            mttkrp[i] = np.sum(psc * B, axis=0)
+            mttkrp[i] = m_i
         elif mode == 1:
             mttkrp += psc * A[i]
         else:
             # Mode 2 updates C
             H[cond_i] = proj @ (B * A[i])
 
-        norm_sq_err -= 2.0 * np.einsum("r,jr,jr->", A[i], B, psc)
-        norm_sq_err += (B_i_inner * CtC).sum()
-
     if return_projections:
         return proj_list
 
     if mode == 2:
-        mttkrp = rmatmul_raw(H.T, X).T
+        mttkrp = (H.T @ X).T
         if means is not None:
             mttkrp -= np.outer(means, np.sum(H, axis=0))
 
@@ -130,16 +126,8 @@ def project_data(
 def standardize_pf2(
     factors: list[np.ndarray], projections: list[np.ndarray]
 ) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:
-    # Order components by condition variance. A component pruned entirely to
-    # zero by l1_c regularization (dead in every factor) has mean == 0 here;
-    # treat it as minimum variance rather than propagating a 0/0 NaN.
-    col_mean = np.mean(factors[0], axis=0)
-    gini = np.divide(
-        np.var(factors[0], axis=0),
-        col_mean,
-        out=np.zeros_like(col_mean),
-        where=col_mean != 0,
-    )
+    # Order components by condition variance-to-mean ratio
+    gini = np.var(factors[0], axis=0) / np.mean(factors[0], axis=0)
     gini_idx = np.argsort(gini)
     factors = [f[:, gini_idx] for f in factors]
 

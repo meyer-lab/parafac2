@@ -247,6 +247,8 @@ class GPUMatrix:
     results as NumPy ndarrays.
     """
 
+    __array_priority__ = 1000
+
     def __init__(self, mat: np.ndarray | csr_array, backend: str | None = None) -> None:
         self.backend = get_backend(backend)
         self.shape = mat.shape
@@ -298,17 +300,3 @@ def to_gpu(
     if chosen == "cpu":
         return mat
     return GPUMatrix(mat, backend=chosen)
-
-
-def matmul_raw(X: Any, rhs: np.ndarray) -> np.ndarray:
-    """Compute X @ rhs where X can be GPUMatrix, np.ndarray, or scipy sparse array."""
-    if hasattr(X, "matmul"):
-        return X.matmul(rhs)
-    return X @ rhs
-
-
-def rmatmul_raw(lhs: np.ndarray, X: Any) -> np.ndarray:
-    """Compute lhs @ X where X can be GPUMatrix, np.ndarray, or scipy sparse array."""
-    if hasattr(X, "rmatmul"):
-        return X.rmatmul(lhs)
-    return lhs @ X

@@ -6,7 +6,7 @@ import anndata
 import numpy as np
 from tqdm import tqdm
 
-from .backend import matmul_raw, rmatmul_raw, to_gpu
+from .backend import to_gpu
 
 if TYPE_CHECKING:
     from scipy.sparse import csr_array
@@ -69,29 +69,27 @@ def parafac2_init(
 
     l_dim = min(n_genes, rank + n_oversamples)
 
+    def centered_matmul(R: np.ndarray) -> np.ndarray:
+        Y = (X @ R).astype(np.float64)
+        return Y - (means @ R).astype(np.float64) if means is not None else Y
+
+    def centered_rmatmul(L: np.ndarray) -> np.ndarray:
+        Z_T = (L @ X).astype(np.float64)
+        if means is not None:
+            Z_T -= np.outer(np.sum(L, axis=1), means).astype(np.float64)
+        return Z_T
+
     Omega = rng.normal(size=(n_genes, l_dim)).astype(np.float64)
-    Y = matmul_raw(X, Omega).astype(np.float64)
-    if means is not None:
-        Y -= (means @ Omega).astype(np.float64)
+    Y = centered_matmul(Omega)
 
     for _ in range(n_iter):
         Q, _ = np.linalg.qr(Y, mode="reduced")
-        Z_T = rmatmul_raw(Q.T, X).astype(np.float64)
-        if means is not None:
-            Q_sum = np.sum(Q, axis=0)
-            Z_T -= np.outer(Q_sum, means).astype(np.float64)
-        Z = Z_T.T
+        Z = centered_rmatmul(Q.T).T
         Q_z, _ = np.linalg.qr(Z, mode="reduced")
-        Y = matmul_raw(X, Q_z).astype(np.float64)
-        if means is not None:
-            Y -= (means @ Q_z).astype(np.float64)
+        Y = centered_matmul(Q_z)
 
     Q, _ = np.linalg.qr(Y, mode="reduced")
-
-    B = rmatmul_raw(Q.T, X).astype(np.float64)
-    if means is not None:
-        Q_sum = np.sum(Q, axis=0)
-        B -= np.outer(Q_sum, means).astype(np.float64)
+    B = centered_rmatmul(Q.T)
 
     _, _, vh = np.linalg.svd(B, full_matrices=False)
     C = vh[:rank, :].T.astype(np.float64)

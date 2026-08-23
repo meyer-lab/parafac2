@@ -373,7 +373,7 @@ def _check_backend_available(backend: str) -> bool:
 @pytest.mark.parametrize("backend", ["cpu", "mlx", "cupy"])
 def test_backend_matrix_ops(sparse: bool, backend: str):
     """Test GPUMatrix matmul and rmatmul for available backends against NumPy."""
-    from ..backend import GPUMatrix, matmul_raw, rmatmul_raw
+    from ..backend import GPUMatrix
 
     if not _check_backend_available(backend):
         pytest.skip(f"Backend '{backend}' is not installed.")
@@ -386,13 +386,13 @@ def test_backend_matrix_ops(sparse: bool, backend: str):
 
     # Left matmul (2D and 1D)
     rhs2 = rng.normal(size=(20, 5)).astype(np.float32)
-    res_mat = matmul_raw(gpu_mat, rhs2)
+    res_mat = gpu_mat @ rhs2
     expected_mat = raw @ rhs2
     np.testing.assert_allclose(res_mat, expected_mat, rtol=1e-5, atol=1e-5)
 
     # Right matmul (2D and 1D)
     lhs2 = rng.normal(size=(4, 25)).astype(np.float32)
-    res_rmat = rmatmul_raw(lhs2, gpu_mat)
+    res_rmat = lhs2 @ gpu_mat
     expected_rmat = lhs2 @ raw
     np.testing.assert_allclose(res_rmat, expected_rmat, rtol=1e-5, atol=1e-5)
 
