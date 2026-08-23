@@ -347,3 +347,72 @@ def test_project_data_sparse_dense_with_means():
     )
     for pd, ps in zip(proj_d, proj_s):
         np.testing.assert_allclose(pd, ps, rtol=1e-5, atol=1e-5)
+
+
+def _check_backend_available(backend: str) -> bool:
+    if backend == "cpu":
+        return True
+    elif backend == "mlx":
+        try:
+            import mlx.core  # noqa: F401
+
+            return True
+        except ImportError:
+            return False
+    elif backend == "cupy":
+        try:
+            import cupy  # noqa: F401
+
+            return True
+        except ImportError:
+            return False
+    return False
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+@pytest.mark.parametrize("backend", ["cpu", "mlx", "cupy"])
+def test_backend_matrix_ops(sparse: bool, backend: str):
+    """Test GPUMatrix matmul and rmatmul for available backends against NumPy."""
+    from ..backend import GPUMatrix, matmul_raw, rmatmul_raw
+
+    if not _check_backend_available(backend):
+        pytest.skip(f"Backend '{backend}' is not installed.")
+
+    rng = np.random.default_rng(42)
+    raw = rng.normal(size=(25, 20)).astype(np.float32)
+    mat = csr_array(raw) if sparse else raw
+
+    gpu_mat = GPUMatrix(mat, backend=backend)
+
+    # Left matmul (2D and 1D)
+    rhs2 = rng.normal(size=(20, 5)).astype(np.float32)
+    res_mat = matmul_raw(gpu_mat, rhs2)
+    expected_mat = raw @ rhs2
+    np.testing.assert_allclose(res_mat, expected_mat, rtol=1e-5, atol=1e-5)
+
+    # Right matmul (2D and 1D)
+    lhs2 = rng.normal(size=(4, 25)).astype(np.float32)
+    res_rmat = rmatmul_raw(lhs2, gpu_mat)
+    expected_rmat = lhs2 @ raw
+    np.testing.assert_allclose(res_rmat, expected_rmat, rtol=1e-5, atol=1e-5)
+
+
+def test_invalid_backend():
+    from ..backend import get_backend
+
+    with pytest.raises(ValueError, match="Unknown backend"):
+        get_backend("nonexistent_backend")
+
+
+def test_get_backend_fallback(monkeypatch):
+    from ..backend import get_backend
+
+    monkeypatch.setattr(
+        "builtins.__import__",
+        lambda name, *args, **kwargs: (
+            (_ for _ in ()).throw(ImportError)
+            if name in ("mlx.core", "cupy")
+            else __import__(name, *args, **kwargs)
+        ),
+    )
+    assert get_backend() == "cpu"

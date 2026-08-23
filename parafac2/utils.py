@@ -1,9 +1,11 @@
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from scipy.sparse import issparse
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
+
+from .backend import matmul_raw, rmatmul_raw
 
 if TYPE_CHECKING:
     from scipy.sparse import csr_array
@@ -52,7 +54,7 @@ def parafac_update(
 
 
 def project_data(
-    X: "np.ndarray | csr_array",
+    X: Any,
     condition_unique_idxs: np.ndarray,
     means: np.ndarray | None,
     factors: list[np.ndarray],
@@ -72,7 +74,7 @@ def project_data(
     norm_sq_err = norm_X_sq
 
     # Single GEMM for W = (X - 1 mu^T) @ C = X @ C - 1 (mu @ C)
-    W = X @ C
+    W = matmul_raw(X, C)
     if means is not None:
         W = W - (means @ C)
 
@@ -118,7 +120,7 @@ def project_data(
         return proj_list
 
     if mode == 2:
-        mttkrp = (H.T @ X).T
+        mttkrp = rmatmul_raw(H.T, X).T
         if means is not None:
             mttkrp -= np.outer(means, np.sum(H, axis=0))
 

@@ -1,10 +1,12 @@
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import anndata
 import numpy as np
 from tqdm import tqdm
+
+from .backend import matmul_raw, rmatmul_raw, to_gpu
 
 if TYPE_CHECKING:
     from scipy.sparse import csr_array
@@ -41,13 +43,14 @@ def store_pf2(
 
 
 def parafac2_init(
-    X: "np.ndarray | csr_array",
+    X: Any,
     condition_unique_idxs: np.ndarray,
     rank: int = 3,
     means: np.ndarray | None = None,
     random_state: int | np.random.Generator | None = None,
     n_oversamples: int = 10,
     n_iter: int = 2,
+    norm_tensor: float | None = None,
 ) -> tuple[list[np.ndarray], float]:
     """
     Compute initial factors using randomized SVD directly performed on
@@ -61,30 +64,31 @@ def parafac2_init(
 
     n_cond = int(np.amax(condition_unique_idxs)) + 1
     n_genes = X.shape[1]
-    norm_tensor = calc_norm_sq(X, means)
+    if norm_tensor is None:
+        norm_tensor = calc_norm_sq(X, means)
 
     l_dim = min(n_genes, rank + n_oversamples)
 
     Omega = rng.normal(size=(n_genes, l_dim)).astype(np.float64)
-    Y = (X @ Omega).astype(np.float64)
+    Y = matmul_raw(X, Omega).astype(np.float64)
     if means is not None:
         Y -= (means @ Omega).astype(np.float64)
 
     for _ in range(n_iter):
         Q, _ = np.linalg.qr(Y, mode="reduced")
-        Z_T = (Q.T @ X).astype(np.float64)
+        Z_T = rmatmul_raw(Q.T, X).astype(np.float64)
         if means is not None:
             Q_sum = np.sum(Q, axis=0)
             Z_T -= np.outer(Q_sum, means).astype(np.float64)
         Z = Z_T.T
         Q_z, _ = np.linalg.qr(Z, mode="reduced")
-        Y = (X @ Q_z).astype(np.float64)
+        Y = matmul_raw(X, Q_z).astype(np.float64)
         if means is not None:
             Y -= (means @ Q_z).astype(np.float64)
 
     Q, _ = np.linalg.qr(Y, mode="reduced")
 
-    B = (Q.T @ X).astype(np.float64)
+    B = rmatmul_raw(Q.T, X).astype(np.float64)
     if means is not None:
         Q_sum = np.sum(Q, axis=0)
         B -= np.outer(Q_sum, means).astype(np.float64)
@@ -107,6 +111,7 @@ def parafac2_nd(
     tol: float = 1e-6,
     random_state: int | None = None,
     callback: Callable[[int, float, list[np.ndarray]], None] | None = None,
+    backend: str | None = None,
 ) -> tuple[tuple[np.ndarray, list[np.ndarray], list[np.ndarray]], float]:
     r"""The same interface as regular PARAFAC2."""
     # Verbose if this is not an automated build
@@ -121,11 +126,19 @@ def parafac2_nd(
     else:
         means = np.zeros(X_in.shape[1])
 
-    factors, norm_tensor = parafac2_init(
-        X_mat, sgIndex, rank=rank, means=means, random_state=random_state
+    norm_tensor = calc_norm_sq(X_mat, means)
+    X_raw = to_gpu(X_mat, backend=backend)
+
+    factors, _ = parafac2_init(
+        X_raw,
+        sgIndex,
+        rank=rank,
+        means=means,
+        random_state=random_state,
+        norm_tensor=norm_tensor,
     )
 
-    mttkrp, err = project_data(X_mat, sgIndex, means, factors, norm_tensor, mode=0)
+    mttkrp, err = project_data(X_raw, sgIndex, means, factors, norm_tensor, mode=0)
     errs = [err]
 
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=0.5)
@@ -137,7 +150,7 @@ def parafac2_nd(
                 mode,
             )
             mttkrp, err = project_data(
-                X_mat,
+                X_raw,
                 sgIndex,
                 means,
                 factors,
@@ -159,7 +172,7 @@ def parafac2_nd(
     projections: list[np.ndarray] = cast(
         "list[np.ndarray]",
         project_data(
-            X_mat,
+            X_raw,
             sgIndex,
             means,
             factors,
