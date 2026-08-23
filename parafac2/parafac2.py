@@ -121,16 +121,11 @@ def parafac2_nd(
     else:
         means = np.zeros(X_in.shape[1])
 
-    n_cond = int(np.amax(sgIndex)) + 1
-    cond_indices = [np.flatnonzero(sgIndex == i) for i in range(n_cond)]
-
     factors, norm_tensor = parafac2_init(
         X_mat, sgIndex, rank=rank, means=means, random_state=random_state
     )
 
-    mttkrp, err = project_data(
-        X_mat, sgIndex, means, factors, norm_tensor, mode=0, cond_indices=cond_indices
-    )
+    mttkrp, err = project_data(X_mat, sgIndex, means, factors, norm_tensor, mode=0)
     errs = [err]
 
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=0.5)
@@ -148,7 +143,6 @@ def parafac2_nd(
                 factors,
                 norm_tensor,
                 mode=(mode + 1) % len(factors),
-                cond_indices=cond_indices,
             )
 
         errs.append(err / norm_tensor)
@@ -172,7 +166,6 @@ def parafac2_nd(
             norm_tensor,
             mode=0,
             return_projections=True,
-            cond_indices=cond_indices,
         ),
     )
 

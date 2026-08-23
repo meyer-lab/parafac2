@@ -59,7 +59,6 @@ def project_data(
     norm_X_sq: float,
     mode: int,
     return_projections: bool = False,
-    cond_indices: list[np.ndarray] | None = None,
 ) -> tuple[np.ndarray, float] | list[np.ndarray]:
     """
     Project each condition's data onto the current factors and accumulate the
@@ -77,11 +76,6 @@ def project_data(
     if means is not None:
         W = W - (means @ C)
 
-    if cond_indices is None:
-        cond_indices = [
-            np.flatnonzero(condition_unique_idxs == i) for i in range(n_cond)
-        ]
-
     if mode == 0:
         mttkrp = np.zeros((n_cond, rank))
     elif mode == 1:
@@ -91,8 +85,8 @@ def project_data(
 
     proj_list = []
     for i in range(n_cond):
-        idx_i = cond_indices[i]
-        W_i = W[idx_i]
+        cond_i = condition_unique_idxs == i
+        W_i = W[cond_i]
         T_i = (B * A[i]).T  # (rank, rank)
         M = W_i @ T_i
         G = M.T @ M  # (rank, rank)
@@ -115,7 +109,7 @@ def project_data(
             mttkrp += psc * A[i]
         else:
             # Mode 2 updates C
-            H[idx_i] = proj @ (B * A[i])
+            H[cond_i] = proj @ (B * A[i])
 
         norm_sq_err -= 2.0 * np.einsum("r,jr,jr->", A[i], B, psc)
         norm_sq_err += (B_i_inner * CtC).sum()
