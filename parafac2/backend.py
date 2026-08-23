@@ -23,16 +23,16 @@ def get_backend(backend: str | None = None) -> str:
         )
 
     try:
-        import mlx.core  # noqa: F401
+        import cupy  # noqa: F401
 
-        return "mlx"
+        return "cupy"
     except ImportError:
         pass
 
     try:
-        import cupy  # noqa: F401
+        import mlx.core  # noqa: F401
 
-        return "cupy"
+        return "mlx"
     except ImportError:
         pass
 
@@ -130,20 +130,28 @@ def _mlx_to_numpy(mx_out: Any, orig_dtype: np.dtype, is_1d: bool) -> np.ndarray:
     return res_arr.ravel() if is_1d else res_arr
 
 
-def _matmul_mlx(mat: np.ndarray | csr_array, rhs: np.ndarray) -> np.ndarray:
+def _to_mlx_matrix(mat: np.ndarray | csr_array) -> Any:
     import mlx.core as mx
 
-    orig_dtype = getattr(rhs, "dtype", mat.dtype)
-    M, _N = mat.shape
-
     if issparse(mat):
-        mat_csr = cast("csr_array", mat)
+        return _csr_to_mlx(cast("csr_array", mat))
+    return mx.array(mat)
+
+
+def _matmul_mlx(
+    device_mat: Any, rhs: np.ndarray, is_sparse: bool, shape: tuple[int, int]
+) -> np.ndarray:
+    import mlx.core as mx
+
+    orig_dtype = rhs.dtype
+    M, _N = shape
+
+    if is_sparse:
+        mx_data, mx_indices, mx_indptr = device_mat
         rhs_2d = rhs[:, None] if rhs.ndim == 1 else rhs
         K = rhs_2d.shape[1]
 
-        mx_data, mx_indices, mx_indptr = _csr_to_mlx(mat_csr)
         mx_rhs = mx.array(rhs_2d.astype(np.float32, copy=False))
-
         kernel = _get_mlx_csr_spmm_kernel()
         tg_m = min(M, 16)
         tg_k = min(K, 16)
@@ -157,26 +165,25 @@ def _matmul_mlx(mat: np.ndarray | csr_array, rhs: np.ndarray) -> np.ndarray:
         )
         return _mlx_to_numpy(out[0], orig_dtype, rhs.ndim == 1)
     else:
-        mx_mat = mx.array(mat)
         mx_rhs = mx.array(rhs)
-        mx_res = mx_mat @ mx_rhs
+        mx_res = device_mat @ mx_rhs
         return _mlx_to_numpy(mx_res, orig_dtype, rhs.ndim == 1)
 
 
-def _rmatmul_mlx(lhs: np.ndarray, mat: np.ndarray | csr_array) -> np.ndarray:
+def _rmatmul_mlx(
+    lhs: np.ndarray, device_mat: Any, is_sparse: bool, shape: tuple[int, int]
+) -> np.ndarray:
     import mlx.core as mx
 
-    orig_dtype = getattr(lhs, "dtype", mat.dtype)
-    M, N = mat.shape
+    orig_dtype = lhs.dtype
+    M, N = shape
 
-    if issparse(mat):
-        mat_csr = cast("csr_array", mat)
+    if is_sparse:
+        mx_data, mx_indices, mx_indptr = device_mat
         lhs_2d = lhs[None, :] if lhs.ndim == 1 else lhs
         K = lhs_2d.shape[0]
 
-        mx_data, mx_indices, mx_indptr = _csr_to_mlx(mat_csr)
         mx_lhs = mx.array(lhs_2d.astype(np.float32, copy=False))
-
         kernel = _get_mlx_csr_atomic_rspmm_kernel()
         tg_k = min(K, 16)
         tg_m = min(M, 16)
@@ -198,8 +205,7 @@ def _rmatmul_mlx(lhs: np.ndarray, mat: np.ndarray | csr_array) -> np.ndarray:
         return _mlx_to_numpy(out[0], orig_dtype, lhs.ndim == 1)
     else:
         mx_lhs = mx.array(lhs)
-        mx_mat = mx.array(mat)
-        mx_res = mx_lhs @ mx_mat
+        mx_res = mx_lhs @ device_mat
         return _mlx_to_numpy(mx_res, orig_dtype, lhs.ndim == 1)
 
 
@@ -218,105 +224,79 @@ def _to_cupy_matrix(mat: np.ndarray | csr_array) -> Any:
     return cp.asarray(mat)
 
 
-def _matmul_cupy(mat: np.ndarray | csr_array, rhs: np.ndarray) -> np.ndarray:
+def _matmul_cupy(cp_mat: Any, rhs: np.ndarray) -> np.ndarray:
     import cupy as cp
 
-    cp_mat = _to_cupy_matrix(mat)
     cp_rhs = cp.asarray(rhs)
     cp_res = cp_mat @ cp_rhs
     return cp.asnumpy(cp_res)
 
 
-def _rmatmul_cupy(lhs: np.ndarray, mat: np.ndarray | csr_array) -> np.ndarray:
+def _rmatmul_cupy(lhs: np.ndarray, cp_mat: Any) -> np.ndarray:
     import cupy as cp
 
     cp_lhs = cp.asarray(lhs)
-    cp_mat = _to_cupy_matrix(mat)
     cp_res = cp_lhs @ cp_mat
     return cp.asnumpy(cp_res)
 
 
-class SampleArray:
+class GPUMatrix:
     """
-    Wrapper for a single sample matrix (csr_array or np.ndarray) and its gene means.
-    Automatically performs mean-centering during left and right matrix multiplications.
+    Wrapper for a single matrix (csr_array or np.ndarray) stored on GPU memory
+    (CuPy or MLX) or CPU. Evaluates matrix products on the device and returns
+    results as NumPy ndarrays.
     """
 
     __array_priority__ = 1000
 
-    def __init__(self, mat: np.ndarray | csr_array, means: np.ndarray) -> None:
-        if issparse(mat):
-            self.mat = csr_array(mat)
+    def __init__(self, mat: np.ndarray | csr_array, backend: str | None = None) -> None:
+        self.backend = get_backend(backend)
+        self.shape = mat.shape
+        self.dtype = mat.dtype
+        self.is_sparse = issparse(mat)
+
+        if self.backend == "cupy":
+            self.device_mat = _to_cupy_matrix(mat)
+        elif self.backend == "mlx":
+            self.device_mat = _to_mlx_matrix(mat)
         else:
-            self.mat = np.asarray(mat)
-        self.means = np.asarray(means).ravel()
+            self.device_mat = mat
 
-    @property
-    def shape(self) -> tuple[int, int]:
-        return self.mat.shape
+    def matmul(self, rhs: np.ndarray) -> np.ndarray:
+        """Compute self @ rhs and return NumPy array."""
+        if self.backend == "cupy":
+            return _matmul_cupy(self.device_mat, rhs)
+        elif self.backend == "mlx":
+            return _matmul_mlx(
+                self.device_mat, rhs, is_sparse=self.is_sparse, shape=self.shape
+            )
+        return self.device_mat @ rhs
 
-    @property
-    def dtype(self) -> np.dtype:
-        return self.mat.dtype
+    def rmatmul(self, lhs: np.ndarray) -> np.ndarray:
+        """Compute lhs @ self and return NumPy array."""
+        if self.backend == "cupy":
+            return _rmatmul_cupy(lhs, self.device_mat)
+        elif self.backend == "mlx":
+            return _rmatmul_mlx(
+                lhs, self.device_mat, is_sparse=self.is_sparse, shape=self.shape
+            )
+        return lhs @ self.device_mat
 
-    @property
-    def ndim(self) -> int:
-        return 2
+    def __matmul__(self, rhs: np.ndarray) -> np.ndarray:
+        return self.matmul(rhs)
 
-    def __len__(self) -> int:
-        return self.mat.shape[0]
+    def __rmatmul__(self, lhs: np.ndarray) -> np.ndarray:
+        return self.rmatmul(lhs)
 
-    def toarray(self) -> np.ndarray:
-        """Return the dense, mean-centered matrix."""
-        dense = (
-            cast("csr_array", self.mat).toarray() if issparse(self.mat) else self.mat
-        )
-        return dense - self.means
 
-    def norm_sq(self) -> float:
-        """Return the squared Frobenius norm of the mean-centered matrix."""
-        if issparse(self.mat):
-            mat_csr = cast("csr_array", self.mat)
-            M = mat_csr.shape[0]
-            term1 = np.sum(mat_csr.data**2)
-            term2 = -2.0 * np.sum(mat_csr.data * self.means[mat_csr.indices])
-            term3 = M * np.sum(self.means**2)
-            return float(term1 + term2 + term3)
-        return float(np.sum((self.mat - self.means) ** 2))
-
-    def __matmul__(self, rhs: np.ndarray, backend: str | None = None) -> np.ndarray:
-        """
-        Left matrix multiplication: self @ rhs
-        Computes (self.mat - means) @ rhs = self.mat @ rhs - means @ rhs
-        """
-        chosen_backend = get_backend(backend)
-        if chosen_backend == "mlx":
-            res_arr = _matmul_mlx(self.mat, rhs)
-        elif chosen_backend == "cupy":
-            res_arr = _matmul_cupy(self.mat, rhs)
-        else:
-            res_arr = self.mat @ rhs
-
-        res_arr -= self.means @ rhs
-        return res_arr
-
-    def __rmatmul__(self, lhs: np.ndarray, backend: str | None = None) -> np.ndarray:
-        """
-        Right matrix multiplication: lhs @ self
-        Computes lhs @ (self.mat - means) = lhs @ self.mat -
-        outer(sum(lhs, axis=1), means)
-        """
-        chosen_backend = get_backend(backend)
-        if chosen_backend == "mlx":
-            res_arr = _rmatmul_mlx(lhs, self.mat)
-        elif chosen_backend == "cupy":
-            res_arr = _rmatmul_cupy(lhs, self.mat)
-        else:
-            res_arr = lhs @ self.mat
-
-        if lhs.ndim == 2:
-            row_sums = np.sum(lhs, axis=1)
-            res_arr -= np.outer(row_sums, self.means)
-        else:
-            res_arr -= np.sum(lhs) * self.means
-        return res_arr
+def to_gpu(
+    mat: np.ndarray | csr_array, backend: str | None = None
+) -> GPUMatrix | np.ndarray | csr_array:
+    """
+    Transfer matrix to GPU memory if CuPy or MLX is requested/available,
+    returning a GPUMatrix wrapper. Otherwise returns the CPU matrix as-is.
+    """
+    chosen = get_backend(backend)
+    if chosen == "cpu":
+        return mat
+    return GPUMatrix(mat, backend=chosen)

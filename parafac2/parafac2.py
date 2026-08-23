@@ -1,14 +1,18 @@
 import os
-from collections.abc import Callable, Sequence
-from copy import deepcopy
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, cast
 
 import anndata
 import numpy as np
 from tqdm import tqdm
 
-from .sample import SampleArray
+from .backend import to_gpu
+
+if TYPE_CHECKING:
+    from scipy.sparse import csr_array
+
 from .utils import (
-    anndata_to_list,
+    calc_norm_sq,
     parafac_update,
     project_data,
     standardize_pf2,
@@ -39,15 +43,18 @@ def store_pf2(
 
 
 def parafac2_init(
-    X_in: Sequence[SampleArray],
+    X: Any,
+    condition_unique_idxs: np.ndarray,
     rank: int = 3,
+    means: np.ndarray | None = None,
     random_state: int | np.random.Generator | None = None,
     n_oversamples: int = 10,
     n_iter: int = 2,
+    norm_tensor: float | None = None,
 ) -> tuple[list[np.ndarray], float]:
     """
     Compute initial factors using randomized SVD directly performed on
-    the sequence of SampleArray objects without copying full raw data.
+    the single input matrix X without copying raw data.
     """
     rng = (
         random_state
@@ -55,35 +62,34 @@ def parafac2_init(
         else np.random.default_rng(random_state)
     )
 
-    n_cond = len(X_in)
-    n_genes = X_in[0].shape[1]
-    sizes = [x.shape[0] for x in X_in]
-    bounds = np.cumsum([0, *sizes])
-
-    norm_tensor = float(sum(x.norm_sq() for x in X_in))
+    n_cond = int(np.amax(condition_unique_idxs)) + 1
+    n_genes = X.shape[1]
+    if norm_tensor is None:
+        norm_tensor = calc_norm_sq(X, means)
 
     l_dim = min(n_genes, rank + n_oversamples)
 
+    def centered_matmul(R: np.ndarray) -> np.ndarray:
+        Y = (X @ R).astype(np.float64)
+        return Y - (means @ R).astype(np.float64) if means is not None else Y
+
+    def centered_rmatmul(L: np.ndarray) -> np.ndarray:
+        Z_T = (L @ X).astype(np.float64)
+        if means is not None:
+            Z_T -= np.outer(np.sum(L, axis=1), means).astype(np.float64)
+        return Z_T
+
     Omega = rng.normal(size=(n_genes, l_dim)).astype(np.float64)
-    Y_chunks = [x @ Omega for x in X_in]
-    Y = np.concatenate(Y_chunks, axis=0)
+    Y = centered_matmul(Omega)
 
     for _ in range(n_iter):
         Q, _ = np.linalg.qr(Y, mode="reduced")
-        Z = np.zeros((n_genes, l_dim), dtype=np.float64)
-        for i in range(n_cond):
-            Q_i = Q[bounds[i] : bounds[i + 1], :]
-            Z += (Q_i.T @ X_in[i]).T
+        Z = centered_rmatmul(Q.T).T
         Q_z, _ = np.linalg.qr(Z, mode="reduced")
-        Y_chunks = [x @ Q_z for x in X_in]
-        Y = np.concatenate(Y_chunks, axis=0)
+        Y = centered_matmul(Q_z)
 
     Q, _ = np.linalg.qr(Y, mode="reduced")
-
-    B = np.zeros((l_dim, n_genes), dtype=np.float64)
-    for i in range(n_cond):
-        Q_i = Q[bounds[i] : bounds[i + 1], :]
-        B += Q_i.T @ X_in[i]
+    B = centered_rmatmul(Q.T)
 
     _, _, vh = np.linalg.svd(B, full_matrices=False)
     C = vh[:rank, :].T.astype(np.float64)
@@ -103,81 +109,57 @@ def parafac2_nd(
     tol: float = 1e-6,
     random_state: int | None = None,
     callback: Callable[[int, float, list[np.ndarray]], None] | None = None,
-    l1_c: float = 0.0,
-    max_iter_cd: int = 100,
-    tol_cd: float = 1e-5,
-    orth_b: bool = False,
+    backend: str | None = None,
 ) -> tuple[tuple[np.ndarray, list[np.ndarray], list[np.ndarray]], float]:
     r"""The same interface as regular PARAFAC2."""
     # Verbose if this is not an automated build
     verbose = "CI" not in os.environ
 
-    gamma = 1.1
-    gamma_bar = 1.03
-    eta = 1.5
-    beta_i = 0.05
-    beta_i_bar = 1.0
+    assert X_in.X is not None
+    X_mat = cast("np.ndarray | csr_array", X_in.X)
+    sgIndex = cast("np.ndarray", X_in.obs["condition_unique_idxs"].to_numpy(dtype=int))
 
-    X_list = anndata_to_list(X_in)
+    if "means" in X_in.var:
+        means = X_in.var["means"].to_numpy()
+    else:
+        means = np.zeros(X_in.shape[1])
 
-    factors, norm_tensor = parafac2_init(X_list, rank, random_state)
+    norm_tensor = calc_norm_sq(X_mat, means)
+    X_raw = to_gpu(X_mat, backend=backend)
 
-    mttkrp, err = project_data(X_list, factors, norm_tensor, mode=0)
+    factors, _ = parafac2_init(
+        X_raw,
+        sgIndex,
+        rank=rank,
+        means=means,
+        random_state=random_state,
+        norm_tensor=norm_tensor,
+    )
+
+    mttkrp, err = project_data(X_raw, sgIndex, means, factors, norm_tensor, mode=0)
     errs = [err]
 
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=0.5)
     for iteration in tq:
-        jump = beta_i + 1.0
-
-        factors_old = deepcopy(factors)
-
         for mode in range(len(factors)):
             factors = parafac_update(
                 factors,
                 mttkrp,
                 mode,
-                l1_c=l1_c,
-                max_iter_cd=max_iter_cd,
-                tol_cd=tol_cd,
-                orth_b=orth_b,
             )
             mttkrp, err = project_data(
-                X_list, factors, norm_tensor, mode=(mode + 1) % len(factors)
+                X_raw,
+                sgIndex,
+                means,
+                factors,
+                norm_tensor,
+                mode=(mode + 1) % len(factors),
             )
-
-        # Estimate error with line search
-        factors_ls = [
-            factors_old[ii] + (factors[ii] - factors_old[ii]) * jump for ii in range(3)
-        ]
-        if orth_b:
-            u, _, vh = np.linalg.svd(factors_ls[1], full_matrices=False)
-            factors_ls[1] = u @ vh
-
-        _, err_ls = project_data(X_list, factors_ls, norm_tensor, mode=0)
-
-        if l1_c > 0.0:
-            obj = 0.5 * err + l1_c * float(np.sum(np.abs(factors[2])))
-            obj_ls = 0.5 * err_ls + l1_c * float(np.sum(np.abs(factors_ls[2])))
-            is_better = obj_ls < obj
-        else:
-            is_better = err_ls < err
-
-        if is_better:
-            err = err_ls
-            factors = factors_ls
-
-            beta_i = min(beta_i_bar, gamma * beta_i)
-            beta_i_bar = max(1.0, gamma_bar * beta_i_bar)
-        else:
-            beta_i_bar = beta_i
-            beta_i = beta_i / eta
 
         errs.append(err / norm_tensor)
 
         delta = errs[-2] - errs[-1]
-        tq.set_postfix(
-            error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, jump=jump, refresh=False
-        )
+        tq.set_postfix(error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, refresh=False)
         if callback is not None:
             callback(iteration, errs[-1], factors)
 
@@ -185,8 +167,17 @@ def parafac2_nd(
             break
 
     R2X = 1 - errs[-1]
-    projections: list[np.ndarray] = project_data(
-        X_list, factors, norm_tensor, mode=0, return_projections=True
+    projections: list[np.ndarray] = cast(
+        "list[np.ndarray]",
+        project_data(
+            X_raw,
+            sgIndex,
+            means,
+            factors,
+            norm_tensor,
+            mode=0,
+            return_projections=True,
+        ),
     )
 
     # Standardize the results and return

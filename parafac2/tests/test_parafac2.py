@@ -11,8 +11,7 @@ from tensorly.parafac2_tensor import parafac2_to_slices
 from tensorly.random import random_parafac2
 
 from ..parafac2 import parafac2_init, parafac2_nd
-from ..sample import SampleArray
-from ..utils import anndata_to_list, project_data
+from ..utils import calc_norm_sq, project_data
 
 
 def pf2_to_anndata(X_list, sparse=False):
@@ -39,10 +38,12 @@ def test_init_reprod(sparse: bool):
     X_reprod: list[np.ndarray] = random_parafac2(pf2shape_reprod, rank=3, full=True)
 
     X_ann = pf2_to_anndata(X_reprod, sparse=sparse)
-    X_list = anndata_to_list(X_ann)
+    X_mat = X_ann.X
+    cond_idxs = X_ann.obs["condition_unique_idxs"].to_numpy(dtype=int)
+    means = X_ann.var["means"].to_numpy()
 
-    f1, _ = parafac2_init(X_list, rank=3, random_state=1)
-    f2, _ = parafac2_init(X_list, rank=3, random_state=1)
+    f1, _ = parafac2_init(X_mat, cond_idxs, rank=3, means=means, random_state=1)
+    f2, _ = parafac2_init(X_mat, cond_idxs, rank=3, means=means, random_state=1)
 
     # assert sizes
     assert f1[0].shape == (len(pf2shape_reprod), 3)
@@ -55,8 +56,8 @@ def test_init_reprod(sparse: bool):
 
     # Compare both seeds for each mode.
     for mode in range(3):
-        m1, _ = project_data(X_list, f1, 1.0, mode=mode)
-        m2, _ = project_data(X_list, f2, 1.0, mode=mode)
+        m1, _ = project_data(X_mat, cond_idxs, means, f1, 1.0, mode=mode)
+        m2, _ = project_data(X_mat, cond_idxs, means, f2, 1.0, mode=mode)
         np.testing.assert_allclose(m1, m2, rtol=1e-5, atol=1e-5)
 
 
@@ -197,11 +198,14 @@ def test_pf2_r2x():
     w, f, _ = random_parafac2(pf2shape, rank=3, random_state=1, normalise_factors=False)
 
     means = np.zeros(X[0].shape[1])
-    X_samples = [SampleArray(x, means) for x in X]
+    X_dense = np.concatenate(X, axis=0)
+    cond_idxs = np.concatenate([[i] * s[0] for i, s in enumerate(pf2shape)])
 
-    _, errCMF = project_data(X_samples, f, norm_tensor, mode=0)
+    _, errCMF = project_data(X_dense, cond_idxs, means, f, norm_tensor, mode=0)
     p = project_data(
-        X_samples,
+        X_dense,
+        cond_idxs,
+        means,
         f,
         norm_tensor,
         mode=0,
@@ -215,81 +219,39 @@ def test_pf2_r2x():
 
 def test_pf2_proj_centering():
     """Test that centering the matrix does not affect the results."""
+    shapes = [(25, 300) for _ in range(15)]
     _, factors, projections = random_parafac2(
-        shapes=[(25, 300) for _ in range(15)],
+        shapes=shapes,
         rank=3,
         normalise_factors=False,
         dtype=np.float64,
     )
 
     X_pf = parafac2_to_slices((None, factors, projections))
-
     norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))
 
     means_zero = np.zeros(300)
-    X_samples_zero = [SampleArray(xx, means_zero) for xx in X_pf]
+    X_dense = np.concatenate(X_pf, axis=0)
+    cond_idxs = np.concatenate([[i] * s[0] for i, s in enumerate(shapes)])
 
-    projected_X, norm_sq_err = project_data(X_samples_zero, factors, norm_X_sq, mode=0)
+    projected_X, norm_sq_err = project_data(
+        X_dense, cond_idxs, means_zero, factors, norm_X_sq, mode=0
+    )
 
     np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
 
     # De-mean since we aim to subtract off the means
     means = np.random.randn(X_pf[0].shape[1])
-    X_pf_mean = [xx + means for xx in X_pf]
-    X_samples_mean = [SampleArray(xx, means) for xx in X_pf_mean]
+    X_dense_mean = X_dense + means
 
     projected_X_mean, norm_sq_err_centered = project_data(
-        X_samples_mean, factors, norm_X_sq, mode=0
+        X_dense_mean, cond_idxs, means, factors, norm_X_sq, mode=0
     )
 
     np.testing.assert_allclose(projected_X, projected_X_mean, rtol=1.0e-4, atol=1.0e-4)
     np.testing.assert_allclose(
         norm_sq_err / norm_X_sq, norm_sq_err_centered / norm_X_sq, atol=1e-6
     )
-
-
-def test_parafac2_l1_regularization():
-    """Test that L1 regularization on factor C works, induces sparsity,
-    and is disabled by default."""
-    shapes = [(20, 25) for _ in range(3)]
-    rank = 2
-    rng = np.random.default_rng(42)
-
-    X_list = [rng.normal(size=shape) for shape in shapes]
-    X_ann = pf2_to_anndata(X_list, sparse=False)
-
-    # 1. Verify default behaves identically to l1_c=0.0
-    (w_default, f_default, _p_default), r2x_default = parafac2_nd(
-        X_ann, rank=rank, n_iter_max=10, random_state=42
-    )
-    (w_zero, f_zero, _p_zero), r2x_zero = parafac2_nd(
-        X_ann, rank=rank, n_iter_max=10, random_state=42, l1_c=0.0
-    )
-
-    np.testing.assert_allclose(w_default, w_zero, rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(r2x_default, r2x_zero, rtol=1e-6, atol=1e-6)
-    for fd, fz in zip(f_default, f_zero, strict=True):
-        np.testing.assert_allclose(fd, fz, rtol=1e-6, atol=1e-6)
-
-    # Verify that without L1 regularization, factor C is dense
-    C_default = f_default[2]
-    assert np.all(C_default != 0.0)
-
-    # 2. Verify that L1 regularization with l1_c > 0.0 induces sparsity
-    # l1_c thresholds C in its own units (see parafac_update), so the right
-    # scale depends on the data; 0.005 induces some exact zeros on this
-    # fixture without collapsing a whole component to zero.
-    (_w_reg, f_reg, _p_reg), _r2x_reg = parafac2_nd(
-        X_ann, rank=rank, n_iter_max=50, random_state=42, l1_c=0.005
-    )
-    C_reg = f_reg[2]
-
-    # Check that there are zero elements in C
-    num_zeros = np.sum(C_reg == 0.0)
-    assert num_zeros > 0, "L1 regularization did not induce any zeros in C"
-
-    # Also check that it's different from the unregularized result
-    assert not np.allclose(C_reg, C_default, rtol=1e-3, atol=1e-3)
 
 
 def test_store_pf2():
@@ -320,172 +282,137 @@ def test_store_pf2():
     assert stored_ann.obsm["weighted_projections"].dtype == np.float32
 
 
-def test_anndata_to_list_no_means():
-    """Test anndata_to_list fallback when var['means'] is missing."""
+def test_parafac2_no_means():
+    """Test parafac2_nd fallback when var['means'] is missing."""
     raw = np.ones((10, 5))
     adata = anndata.AnnData(raw)
     adata.obs["condition_unique_idxs"] = np.array([0] * 5 + [1] * 5)
 
-    samples = anndata_to_list(adata)
-    assert len(samples) == 2
-    np.testing.assert_allclose(samples[0].means, np.zeros(5))
+    (_w, f, _p), _r2x = parafac2_nd(adata, rank=2, n_iter_max=5)
+    assert len(f) == 3
 
 
-def test_parafac_update_l1_c_scale_invariant():
-    """l1_c must threshold C in its own units, not the pre-division MTTKRP
-    residual, so the same l1_c produces the same absolute shrinkage and zero
-    pattern regardless of a component's Gram-diagonal "energy" (~||A_j||^2 *
-    ||B_j||^2). Otherwise a low-energy component gets disproportionately
-    shrunk relative to a high-energy one at the same l1_c, which can collapse
-    a whole column to zero (and singularize the next factor's Gram matrix)
-    well before a high-energy column is touched at all.
-    """
-    from ..utils import parafac_update
-
-    rank = 2
-    # A, B chosen (both diagonal) so v = (A^T A) * (B^T B) is diagonal too,
-    # decoupling the two components' coordinate-descent updates exactly, with
-    # very different Gram-diagonal energy: v[0,0]=36, v[1,1]=1.
-    A = np.array([[3.0, 0.0], [0.0, 1.0]])
-    B = np.array([[2.0, 0.0], [0.0, 1.0]])
-    C = np.zeros((5, rank))
-    factors = [A, B, C]
-
-    target = np.array([0.5, -0.3, 0.2, 0.1, -0.05])
-    # mttkrp columns scaled by each component's own v[j,j], so the
-    # unconstrained least-squares solution (mttkrp[:, j] / v[j, j]) is
-    # identical (== target) for both components despite the 36x energy gap.
-    mttkrp = np.stack([36.0 * target, 1.0 * target], axis=1)
-
-    updated = parafac_update(factors, mttkrp, mode=2, l1_c=0.15)
-    C_updated = updated[2]
-
-    expected = np.sign(target) * np.maximum(0.0, np.abs(target) - 0.15)
-    np.testing.assert_allclose(C_updated[:, 0], expected, atol=1e-8)
-    np.testing.assert_allclose(C_updated[:, 1], expected, atol=1e-8)
-    # Both components should have the same zero pattern despite the energy gap.
-    assert np.array_equal(C_updated[:, 0] == 0.0, C_updated[:, 1] == 0.0)
-
-
-def test_parafac_update_zero_denom():
-    """Test parafac_update with l1_c when denominator in coordinate descent is 0."""
-    from ..utils import parafac_update
-
-    rank = 2
-    factors = [np.ones((2, rank)), np.ones((rank, rank)), np.ones((5, rank))]
-    # All zero MTTKRP matrix forces denominator / rho to 0
-    mttkrp = np.zeros((5, rank))
-
-    updated_factors = parafac_update(factors, mttkrp, mode=2, l1_c=0.1)
-    np.testing.assert_allclose(updated_factors[2], np.zeros((5, rank)))
-
-
-def test_parafac_update_orth_b():
-    """Test that parafac_update with orth_b=True produces an orthonormal B matrix."""
-    from ..utils import parafac_update
-
-    rank = 3
+def test_calc_norm_sq():
+    """Test calc_norm_sq for dense and sparse with and without means."""
     rng = np.random.default_rng(42)
-    factors = [
-        rng.normal(size=(4, rank)),
-        rng.normal(size=(rank, rank)),
-        rng.normal(size=(10, rank)),
-    ]
-    mttkrp = rng.normal(size=(rank, rank))
+    raw = rng.normal(size=(30, 20)).astype(np.float64)
+    raw[rng.random(raw.shape) > 0.3] = 0.0
+    sparse_mat = csr_array(raw)
 
-    updated = parafac_update(factors, mttkrp, mode=1, orth_b=True)
-    B = updated[1]
+    # Without means
+    norm_dense_0 = calc_norm_sq(raw)
+    norm_sparse_0 = calc_norm_sq(sparse_mat)
+    np.testing.assert_allclose(norm_dense_0, np.sum(raw**2))
+    np.testing.assert_allclose(norm_dense_0, norm_sparse_0)
 
-    # Check that B is orthogonal
-    np.testing.assert_allclose(B.T @ B, np.eye(rank), atol=1e-12)
-    np.testing.assert_allclose(B @ B.T, np.eye(rank), atol=1e-12)
+    # With means
+    means = rng.normal(size=20).astype(np.float64)
+    norm_dense_m = calc_norm_sq(raw, means)
+    norm_sparse_m = calc_norm_sq(sparse_mat, means)
+    expected_m = np.sum((raw - means) ** 2)
+    np.testing.assert_allclose(norm_dense_m, expected_m, rtol=1e-10)
+    np.testing.assert_allclose(norm_sparse_m, expected_m, rtol=1e-10)
 
-    # Check that it matches SVD of MTTKRP
-    u, _, vh = np.linalg.svd(mttkrp, full_matrices=False)
-    np.testing.assert_allclose(B, u @ vh, atol=1e-12)
 
-
-def test_parafac2_orth_b_orthonormality():
-    """Test that parafac2_nd with orth_b=True returns an orthonormal B matrix."""
-    shapes = [(30, 40) for _ in range(5)]
-    rank = 3
+def test_project_data_sparse_dense_with_means():
+    """Test project_data produces identical results for sparse and dense with non-zero means."""
     rng = np.random.default_rng(42)
-
-    X_list = [rng.normal(size=shape) for shape in shapes]
-    X_ann = pf2_to_anndata(X_list, sparse=False)
-
-    (_w, f, p), _ = parafac2_nd(
-        X_ann, rank=rank, random_state=42, n_iter_max=50, tol=1e-6, orth_b=True
-    )
-    B = f[1]
-    np.testing.assert_allclose(B.T @ B, np.eye(rank), atol=1e-5)
-    np.testing.assert_allclose(B @ B.T, np.eye(rank), atol=1e-5)
-
-    for P_k in p:
-        np.testing.assert_allclose(P_k.T @ P_k, np.eye(rank), atol=1e-5)
-
-
-def test_parafac2_orth_b_monotonicity():
-    """Test that reconstruction error decreases monotonically with orth_b=True."""
-    shapes = [(30, 45) for _ in range(4)]
+    shapes = [(20, 25) for _ in range(4)]
     rank = 3
-    rng = np.random.default_rng(12)
 
-    X_list = [rng.normal(size=shape) for shape in shapes]
-    X_ann = pf2_to_anndata(X_list, sparse=False)
-
-    errors = []
-
-    def callback(_iteration, error, _factors):
-        errors.append(error)
-
-    parafac2_nd(
-        X_ann,
-        rank=rank,
-        random_state=12,
-        n_iter_max=50,
-        tol=1e-10,
-        callback=callback,
-        orth_b=True,
-    )
-
-    for i in range(1, len(errors)):
-        delta = errors[i - 1] - errors[i]
-        assert delta >= -1e-6, (
-            f"Error increased at iteration {i}: {errors[i - 1]} -> {errors[i]} "
-            f"(delta={delta})"
-        )
-
-
-def test_parafac2_orth_b_exact_recovery():
-    """Test exact recovery of synthetic data with orthogonal B."""
-    shapes = [(25, 35) for _ in range(5)]
-    rank = 3
-    rng = np.random.default_rng(100)
-
-    A = rng.uniform(0.5, 1.5, size=(len(shapes), rank))
-    B, _ = np.linalg.qr(rng.normal(size=(rank, rank)))
-    C = rng.normal(size=(shapes[0][1], rank))
-
-    projections = []
-    for Ik, _ in shapes:
-        P = rng.normal(size=(Ik, rank))
-        Q, _ = np.linalg.qr(P)
-        projections.append(Q)
-
-    factors = [A, B, C]
-
+    _w, factors, projections = random_parafac2(shapes, rank=rank, random_state=42)
     X_slices = parafac2_to_slices((None, factors, projections))
-    X_ann = pf2_to_anndata(X_slices, sparse=False)
 
-    (w_fit, f_fit, p_fit), r2x = parafac2_nd(
-        X_ann, rank=rank, random_state=100, n_iter_max=150, tol=1e-7, orth_b=True
+    means = rng.normal(size=25)
+    X_dense = np.concatenate([x + means for x in X_slices], axis=0)
+    X_sparse = csr_array(X_dense)
+    cond_idxs = np.concatenate([[i] * s[0] for i, s in enumerate(shapes)])
+    norm_sq = calc_norm_sq(X_dense, means)
+
+    for mode in range(3):
+        mtt_d, err_d = project_data(
+            X_dense, cond_idxs, means, factors, norm_sq, mode=mode
+        )
+        mtt_s, err_s = project_data(
+            X_sparse, cond_idxs, means, factors, norm_sq, mode=mode
+        )
+        np.testing.assert_allclose(mtt_d, mtt_s, rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(err_d, err_s, rtol=1e-5, atol=1e-5)
+
+    proj_d = project_data(
+        X_dense, cond_idxs, means, factors, norm_sq, mode=0, return_projections=True
     )
+    proj_s = project_data(
+        X_sparse, cond_idxs, means, factors, norm_sq, mode=0, return_projections=True
+    )
+    for pd, ps in zip(proj_d, proj_s):
+        np.testing.assert_allclose(pd, ps, rtol=1e-5, atol=1e-5)
 
-    norm_X = np.sum([np.linalg.norm(x) ** 2 for x in X_slices])
-    rec_err = _parafac2_reconstruction_error(X_slices, (w_fit, f_fit, p_fit))
-    relative_err = rec_err / np.sqrt(norm_X)
 
-    assert r2x > 0.99
-    assert relative_err < 0.05
-    np.testing.assert_allclose(f_fit[1].T @ f_fit[1], np.eye(rank), atol=1e-5)
+def _check_backend_available(backend: str) -> bool:
+    if backend == "cpu":
+        return True
+    elif backend == "mlx":
+        try:
+            import mlx.core  # noqa: F401
+
+            return True
+        except ImportError:
+            return False
+    elif backend == "cupy":
+        try:
+            import cupy  # noqa: F401
+
+            return True
+        except ImportError:
+            return False
+    return False
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+@pytest.mark.parametrize("backend", ["cpu", "mlx", "cupy"])
+def test_backend_matrix_ops(sparse: bool, backend: str):
+    """Test GPUMatrix matmul and rmatmul for available backends against NumPy."""
+    from ..backend import GPUMatrix
+
+    if not _check_backend_available(backend):
+        pytest.skip(f"Backend '{backend}' is not installed.")
+
+    rng = np.random.default_rng(42)
+    raw = rng.normal(size=(25, 20)).astype(np.float32)
+    mat = csr_array(raw) if sparse else raw
+
+    gpu_mat = GPUMatrix(mat, backend=backend)
+
+    # Left matmul (2D and 1D)
+    rhs2 = rng.normal(size=(20, 5)).astype(np.float32)
+    res_mat = gpu_mat @ rhs2
+    expected_mat = raw @ rhs2
+    np.testing.assert_allclose(res_mat, expected_mat, rtol=1e-5, atol=1e-5)
+
+    # Right matmul (2D and 1D)
+    lhs2 = rng.normal(size=(4, 25)).astype(np.float32)
+    res_rmat = lhs2 @ gpu_mat
+    expected_rmat = lhs2 @ raw
+    np.testing.assert_allclose(res_rmat, expected_rmat, rtol=1e-5, atol=1e-5)
+
+
+def test_invalid_backend():
+    from ..backend import get_backend
+
+    with pytest.raises(ValueError, match="Unknown backend"):
+        get_backend("nonexistent_backend")
+
+
+def test_get_backend_fallback(monkeypatch):
+    from ..backend import get_backend
+
+    monkeypatch.setattr(
+        "builtins.__import__",
+        lambda name, *args, **kwargs: (
+            (_ for _ in ()).throw(ImportError)
+            if name in ("mlx.core", "cupy")
+            else __import__(name, *args, **kwargs)
+        ),
+    )
+    assert get_backend() == "cpu"
