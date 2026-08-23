@@ -31,23 +31,10 @@ def parafac_update(
     factors: list[np.ndarray],
     mttkrp: np.ndarray,
     mode: int,
-    l1_c: float = 0.0,
-    max_iter_cd: int = 100,
-    tol_cd: float = 1e-5,
-    orth_b: bool = False,
 ) -> list[np.ndarray]:
     """
-    Perform sequential PARAFAC updates for all modes using pre-computed MTTKRPs.
-    This corresponds to Option 2: Sequential with reuse.
-
-    All factors here are rank-sized (n_cond, rank), (rank, rank), or
-    (n_genes, rank).
+    Perform PARAFAC update for the requested mode using pre-computed MTTKRP.
     """
-    if mode == 1 and orth_b:
-        u, _, vh = np.linalg.svd(mttkrp, full_matrices=False)
-        factors[1] = u @ vh
-        return factors
-
     rank = factors[0].shape[1]
 
     # Compute Gram matrix product using current factors
@@ -56,51 +43,10 @@ def parafac_update(
         if i != mode:
             v *= factor.T @ factor
 
-    # Update the factor for the current mode
-    if mode == 2 and l1_c > 0.0:
-        C = factors[2].copy()
-        M = mttkrp
-        for _ in range(max_iter_cd):
-            C_old = C.copy()
-            for j in range(rank):
-                rho_j = M[:, j] - (C @ v[j, :]) + v[j, j] * C[:, j]
-                denom = v[j, j]
-                if denom > 1e-15:
-                    # Threshold the unconstrained least-squares solution
-                    # (rho_j / denom) directly, rather than thresholding the
-                    # raw residual rho_j before dividing by denom. denom is
-                    # component j's Gram-diagonal "energy"
-                    # (~ ||A_j||^2 * ||B_j||^2), which varies a lot across
-                    # components; thresholding pre-division makes the
-                    # effective penalty in C's own units equal to
-                    # l1_c / denom, so low-energy components get
-                    # disproportionately shrunk and can collapse to all-zero
-                    # (and, once one column is fully zero, its Gram
-                    # contribution can make the next factor's solve
-                    # singular) even at moderate l1_c. Thresholding
-                    # post-division makes l1_c a column-scale-invariant
-                    # penalty on C itself.
-                    c_ls = rho_j / denom
-                    C[:, j] = np.sign(c_ls) * np.maximum(0.0, np.abs(c_ls) - l1_c)
-                else:
-                    C[:, j] = np.zeros_like(rho_j)
-            if np.max(np.abs(C - C_old)) < tol_cd:
-                break
-        factors[2] = C
-    else:
-        try:
-            factors[mode] = np.linalg.solve(v.T, mttkrp.T).T
-        except np.linalg.LinAlgError:
-            # v can be exactly singular when l1_c has thresholded an entire
-            # column of C to zero (a legitimate outcome of L1 regularization
-            # -- that component is pruned): the corresponding diagonal of the
-            # Hadamard-product Gram v is then zero, and since v is PSD a zero
-            # diagonal entry forces the whole row/column to zero too. Fall
-            # back to the minimum-norm least-squares solution (via SVD)
-            # instead of crashing; the dead component's row comes out ~0,
-            # which is the correct behavior, and the fit can recover it on a
-            # later iteration if l1_c's threshold is no longer binding there.
-            factors[mode] = np.linalg.lstsq(v.T, mttkrp.T, rcond=None)[0].T
+    try:
+        factors[mode] = np.linalg.solve(v.T, mttkrp.T).T
+    except np.linalg.LinAlgError:
+        factors[mode] = np.linalg.lstsq(v.T, mttkrp.T, rcond=None)[0].T
 
     return factors
 

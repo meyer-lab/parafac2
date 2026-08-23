@@ -1,6 +1,5 @@
 import os
 from collections.abc import Callable
-from copy import deepcopy
 from typing import TYPE_CHECKING, cast
 
 import anndata
@@ -108,20 +107,10 @@ def parafac2_nd(
     tol: float = 1e-6,
     random_state: int | None = None,
     callback: Callable[[int, float, list[np.ndarray]], None] | None = None,
-    l1_c: float = 0.0,
-    max_iter_cd: int = 100,
-    tol_cd: float = 1e-5,
-    orth_b: bool = False,
 ) -> tuple[tuple[np.ndarray, list[np.ndarray], list[np.ndarray]], float]:
     r"""The same interface as regular PARAFAC2."""
     # Verbose if this is not an automated build
     verbose = "CI" not in os.environ
-
-    gamma = 1.1
-    gamma_bar = 1.03
-    eta = 1.5
-    beta_i = 0.05
-    beta_i_bar = 1.0
 
     assert X_in.X is not None
     X_mat = cast("np.ndarray | csr_array", X_in.X)
@@ -146,19 +135,11 @@ def parafac2_nd(
 
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=0.5)
     for iteration in tq:
-        jump = beta_i + 1.0
-
-        factors_old = deepcopy(factors)
-
         for mode in range(len(factors)):
             factors = parafac_update(
                 factors,
                 mttkrp,
                 mode,
-                l1_c=l1_c,
-                max_iter_cd=max_iter_cd,
-                tol_cd=tol_cd,
-                orth_b=orth_b,
             )
             mttkrp, err = project_data(
                 X_mat,
@@ -170,47 +151,10 @@ def parafac2_nd(
                 cond_indices=cond_indices,
             )
 
-        # Estimate error with line search
-        factors_ls = [
-            factors_old[ii] + (factors[ii] - factors_old[ii]) * jump for ii in range(3)
-        ]
-        if orth_b:
-            u, _, vh = np.linalg.svd(factors_ls[1], full_matrices=False)
-            factors_ls[1] = u @ vh
-
-        _, err_ls = project_data(
-            X_mat,
-            sgIndex,
-            means,
-            factors_ls,
-            norm_tensor,
-            mode=0,
-            cond_indices=cond_indices,
-        )
-
-        if l1_c > 0.0:
-            obj = 0.5 * err + l1_c * float(np.sum(np.abs(factors[2])))
-            obj_ls = 0.5 * err_ls + l1_c * float(np.sum(np.abs(factors_ls[2])))
-            is_better = obj_ls < obj
-        else:
-            is_better = err_ls < err
-
-        if is_better:
-            err = err_ls
-            factors = factors_ls
-
-            beta_i = min(beta_i_bar, gamma * beta_i)
-            beta_i_bar = max(1.0, gamma_bar * beta_i_bar)
-        else:
-            beta_i_bar = beta_i
-            beta_i = beta_i / eta
-
         errs.append(err / norm_tensor)
 
         delta = errs[-2] - errs[-1]
-        tq.set_postfix(
-            error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, jump=jump, refresh=False
-        )
+        tq.set_postfix(error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, refresh=False)
         if callback is not None:
             callback(iteration, errs[-1], factors)
 
