@@ -1,12 +1,18 @@
+"""Tests for the ``normalize`` module's dataset preprocessing pipeline."""
+
+from typing import cast
+
 import anndata
 import numpy as np
 import scipy as sp
 from scipy import sparse as sps
+from scipy.sparse import csr_array
 
 from ..normalize import prepare_dataset
 
 
 def test_normalize():
+    """Test that prepare_dataset filters, normalizes, and annotates a random dataset."""
     rng = np.random.default_rng(42)
     rvs = sp.stats.poisson(25, loc=10).rvs
     random_matrix = sps.random(
@@ -20,7 +26,7 @@ def test_normalize():
     # Assert expected metadata keys added
     assert "condition_unique_idxs" in out.obs
     assert "means" in out.var
-    assert out.X.dtype == np.float32
+    assert cast("csr_array", out.X).dtype == np.float32
 
     # Assert category codes and gene means validity
     assert set(out.obs["condition_unique_idxs"].unique()).issubset({0, 1, 2})

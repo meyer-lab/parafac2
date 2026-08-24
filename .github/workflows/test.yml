@@ -14,9 +14,11 @@ jobs:
       uses: astral-sh/setup-uv@v6
       with:
         enable-cache: true
-    - name: Test with pytest
-      run: uv run pytest
-    - name: Check formatting
-      run: uv run ruff format --check parafac2
     - name: Check linting
       run: uv run ruff check parafac2
+    - name: Check formatting
+      run: uv run ruff format --check parafac2
+    - name: Check types
+      run: uv run ty check parafac2
+    - name: Test with pytest
+      run: uv run pytest

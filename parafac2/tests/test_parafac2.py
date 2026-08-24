@@ -1,5 +1,7 @@
 """
-Test the data import.
+Tests for the core PARAFAC2 fitting routines (``parafac2`` module), the
+supporting numerical utilities (``utils`` module), and the compute backend
+abstraction (``backend`` module).
 """
 
 import anndata
@@ -11,10 +13,25 @@ from tensorly.parafac2_tensor import parafac2_to_slices
 from tensorly.random import random_parafac2
 
 from ..parafac2 import parafac2_init, parafac2_nd
-from ..utils import calc_norm_sq, project_data
+from ..utils import calc_norm_sq, calc_slice_norms, project_data
 
 
 def pf2_to_anndata(X_list, sparse=False):
+    """Build a single concatenated AnnData object from a list of per-condition matrices.
+
+    Parameters
+    ----------
+    X_list : list[np.ndarray]
+        Per-condition data matrices, each with shape ``(n_cells_k, n_genes)``.
+    sparse : bool, default False
+        Whether to convert each matrix to a ``csr_array`` before wrapping it.
+
+    Returns
+    -------
+    anndata.AnnData
+        The concatenated dataset, with ``obs["condition_unique_idxs"]`` set
+        to the source index of each row and ``var["means"]`` zeroed.
+    """
     if sparse:
         X_list = [csr_array(XX) for XX in X_list]
 
@@ -94,6 +111,7 @@ def test_parafac2_monotonicity():
     errors = []
 
     def callback(_iteration, error, _factors):
+        """Record each iteration's relative error for the monotonicity check below."""
         errors.append(error)
 
     parafac2_nd(
@@ -349,19 +367,126 @@ def test_project_data_sparse_dense_with_means():
         np.testing.assert_allclose(pd, ps, rtol=1e-5, atol=1e-5)
 
 
+def test_calc_slice_norms():
+    """Test calc_slice_norms against a brute-force per-condition reference,
+    for dense and sparse input, with and without means."""
+    rng = np.random.default_rng(0)
+    shapes = [10, 15, 7]
+    n_cond = len(shapes)
+    X_list = [rng.normal(size=(n, 12)) for n in shapes]
+    X_dense = np.concatenate(X_list, axis=0)
+    cond_idxs = np.concatenate([[i] * n for i, n in enumerate(shapes)])
+
+    # Introduce sparsity for the sparse variant
+    X_sparse_dense = X_dense.copy()
+    X_sparse_dense[rng.random(X_sparse_dense.shape) > 0.5] = 0.0
+    X_sparse = csr_array(X_sparse_dense)
+
+    for means in (None, rng.normal(size=12)):
+        expected = np.array(
+            [
+                np.linalg.norm(
+                    X_dense[cond_idxs == i] - (means if means is not None else 0.0)
+                )
+                for i in range(n_cond)
+            ]
+        )
+        result_dense = calc_slice_norms(X_dense, means, cond_idxs, n_cond)
+        np.testing.assert_allclose(result_dense, expected, rtol=1e-10)
+
+        expected_sparse = np.array(
+            [
+                np.linalg.norm(
+                    X_sparse_dense[cond_idxs == i]
+                    - (means if means is not None else 0.0)
+                )
+                for i in range(n_cond)
+            ]
+        )
+        result_sparse = calc_slice_norms(X_sparse, means, cond_idxs, n_cond)
+        np.testing.assert_allclose(result_sparse, expected_sparse, rtol=1e-8, atol=1e-8)
+
+
+def test_parafac2_normalize_slices_runs_and_orthonormal():
+    """normalize_slices=True should run to completion and still yield valid,
+    orthonormal projections and a sane R2X."""
+    rng = np.random.default_rng(7)
+    # Deliberately imbalanced condition sizes/scales so the option matters.
+    shapes = [(80, 20), (10, 20), (10, 20)]
+    rank = 3
+
+    X_list = [rng.normal(size=shape) for shape in shapes]
+    X_list[0] *= 5.0  # first condition dominates in scale as well as count
+    X_ann = pf2_to_anndata(X_list, sparse=False)
+
+    (_w, _f, p), r2x = parafac2_nd(
+        X_ann,
+        rank=rank,
+        random_state=7,
+        n_iter_max=50,
+        tol=1e-6,
+        normalize_slices=True,
+    )
+
+    assert 0.0 <= r2x <= 1.0
+    for P_k in p:
+        np.testing.assert_allclose(P_k.T @ P_k, np.eye(rank), atol=1e-5)
+
+
+def test_parafac2_normalize_slices_changes_result():
+    """normalize_slices=True should give a different fit than the default
+    when condition scales/sizes are highly imbalanced."""
+    rng = np.random.default_rng(11)
+    shapes = [(100, 15), (8, 15), (8, 15)]
+    rank = 2
+
+    X_list = [rng.normal(size=shape) for shape in shapes]
+    X_list[0] *= 8.0
+    X_ann = pf2_to_anndata(X_list, sparse=False)
+
+    (_w_off, f_off, _p_off), _r2x_off = parafac2_nd(
+        X_ann, rank=rank, random_state=11, n_iter_max=50, tol=1e-6
+    )
+    (_w_on, f_on, _p_on), _r2x_on = parafac2_nd(
+        X_ann,
+        rank=rank,
+        random_state=11,
+        n_iter_max=50,
+        tol=1e-6,
+        normalize_slices=True,
+    )
+
+    # The two runs should not be numerically identical: the weighting
+    # changes which factors the MTTKRP updates converge to.
+    with pytest.raises(AssertionError):
+        np.testing.assert_allclose(f_off[0], f_on[0], rtol=1e-4, atol=1e-4)
+
+
 def _check_backend_available(backend: str) -> bool:
+    """Return whether the given compute backend's package is importable.
+
+    Parameters
+    ----------
+    backend : str
+        One of ``'cpu'``, ``'mlx'``, or ``'cupy'``.
+
+    Returns
+    -------
+    bool
+        True if the backend can be used in this environment.
+    """
     if backend == "cpu":
         return True
     elif backend == "mlx":
         try:
-            import mlx.core  # noqa: F401
+            import mlx.core  # noqa: F401  # ty: ignore[unresolved-import]
 
             return True
         except ImportError:
             return False
     elif backend == "cupy":
         try:
-            import cupy  # noqa: F401
+            import cupy  # noqa: F401  # ty: ignore[unresolved-import]
 
             return True
         except ImportError:
@@ -398,6 +523,7 @@ def test_backend_matrix_ops(sparse: bool, backend: str):
 
 
 def test_invalid_backend():
+    """Test that get_backend raises ValueError for an unrecognized backend name."""
     from ..backend import get_backend
 
     with pytest.raises(ValueError, match="Unknown backend"):
@@ -405,6 +531,7 @@ def test_invalid_backend():
 
 
 def test_get_backend_fallback(monkeypatch):
+    """Test that get_backend falls back to 'cpu' when mlx and cupy are unimportable."""
     from ..backend import get_backend
 
     monkeypatch.setattr(

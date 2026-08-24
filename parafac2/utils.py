@@ -1,4 +1,13 @@
-from typing import TYPE_CHECKING, Any, cast
+"""
+Low-level numerical routines supporting the PARAFAC2 fit.
+
+Provides norm computation over (optionally mean-centered, optionally sparse)
+data, the per-mode ALS factor update, the per-condition projection and MTTKRP
+accumulation step, and post-fit standardization of the factors and
+projections.
+"""
+
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
@@ -10,10 +19,25 @@ if TYPE_CHECKING:
 
 
 def calc_norm_sq(X: "np.ndarray | csr_array", means: np.ndarray | None = None) -> float:
-    """Return the squared Frobenius norm of the mean-centered matrix."""
+    """Return the squared Frobenius norm of the mean-centered matrix.
+
+    Parameters
+    ----------
+    X : np.ndarray | csr_array
+        The (dense or sparse) matrix to compute the norm of.
+    means : np.ndarray | None, default None
+        Per-column means to subtract before computing the norm. If ``None``
+        or all-zero, ``X`` is used uncentered.
+
+    Returns
+    -------
+    float
+        ``sum((X - means) ** 2)``, computed without densifying a sparse
+        ``X``.
+    """
     if means is None or np.all(means == 0):
         if issparse(X):
-            return float(np.sum(X.data**2))
+            return float(np.sum(cast("csr_array", X).data ** 2))
         return float(np.sum(X**2))
 
     means_arr = np.asarray(means).ravel()
@@ -33,7 +57,27 @@ def calc_slice_norms(
     condition_unique_idxs: np.ndarray,
     n_cond: int,
 ) -> np.ndarray:
-    """Return the per-condition Frobenius norm of the mean-centered slices."""
+    """Return the per-condition Frobenius norm of the mean-centered slices.
+
+    Parameters
+    ----------
+    X : np.ndarray | csr_array
+        The (dense or sparse) matrix stacked across all conditions.
+    means : np.ndarray | None
+        Per-column means to subtract before computing each slice's norm, or
+        ``None``/all-zero to skip centering.
+    condition_unique_idxs : np.ndarray
+        Integer array assigning each row of ``X`` to a condition index in
+        ``[0, n_cond)``.
+    n_cond : int
+        The total number of conditions.
+
+    Returns
+    -------
+    np.ndarray
+        Array of length ``n_cond`` with the Frobenius norm of each
+        condition's (mean-centered) rows of ``X``.
+    """
     idxs = np.asarray(condition_unique_idxs)
     counts = np.bincount(idxs, minlength=n_cond).astype(np.float64)
 
@@ -67,6 +111,25 @@ def parafac_update(
 ) -> list[np.ndarray]:
     """
     Perform PARAFAC update for the requested mode using pre-computed MTTKRP.
+
+    Parameters
+    ----------
+    factors : list[np.ndarray]
+        The current ``[A, B, C]`` factor matrices; ``factors[mode]`` is
+        replaced in place with the updated matrix.
+    mttkrp : np.ndarray
+        The matricized-tensor-times-Khatri-Rao-product for ``mode``, as
+        returned by :func:`project_data`.
+    mode : int
+        Which factor to update (index into ``factors``).
+
+    Returns
+    -------
+    list[np.ndarray]
+        ``factors``, with ``factors[mode]`` updated by solving the normal
+        equations ``factors[mode] @ v = mttkrp`` for the Gram-matrix product
+        ``v`` of the other factors (falling back to a least-squares solve if
+        ``v`` is singular).
     """
     rank = factors[0].shape[1]
 
@@ -82,6 +145,32 @@ def parafac_update(
         factors[mode] = np.linalg.lstsq(v.T, mttkrp.T, rcond=None)[0].T
 
     return factors
+
+
+@overload
+def project_data(
+    X: Any,
+    condition_unique_idxs: np.ndarray,
+    means: np.ndarray | None,
+    factors: list[np.ndarray],
+    norm_X_sq: float,
+    mode: int,
+    return_projections: Literal[False] = False,
+    slice_weights: np.ndarray | None = None,
+) -> tuple[np.ndarray, float]: ...
+
+
+@overload
+def project_data(
+    X: Any,
+    condition_unique_idxs: np.ndarray,
+    means: np.ndarray | None,
+    factors: list[np.ndarray],
+    norm_X_sq: float,
+    mode: int,
+    return_projections: Literal[True],
+    slice_weights: np.ndarray | None = None,
+) -> list[np.ndarray]: ...
 
 
 def project_data(
@@ -104,6 +193,39 @@ def project_data(
     contributes to the factor updates without touching or copying ``X``, and
     without affecting the reported error (which is still computed from the
     unweighted contributions).
+
+    Parameters
+    ----------
+    X : Any
+        The (optionally sparse or GPU-backed) data matrix, stacked across
+        all conditions, with shape ``(total_cells, n_genes)``.
+    condition_unique_idxs : np.ndarray
+        Integer array of length ``total_cells`` giving each row's condition
+        index.
+    means : np.ndarray | None
+        Per-gene means to mean-center ``X`` by, or ``None`` to skip
+        centering.
+    factors : list[np.ndarray]
+        The current ``[A, B, C]`` factor matrices.
+    norm_X_sq : float
+        The squared Frobenius norm of the mean-centered ``X`` (as returned
+        by :func:`calc_norm_sq`), used to compute the reconstruction error.
+    mode : int
+        Which factor's MTTKRP to accumulate (0, 1, or 2), ignored when
+        ``return_projections`` is True.
+    return_projections : bool, default False
+        If True, skip the MTTKRP/error accumulation and instead return the
+        list of per-condition projection matrices ``P_k``.
+    slice_weights : np.ndarray | None, default None
+        Optional per-condition scalar weights applied to the MTTKRP
+        contributions, as described above.
+
+    Returns
+    -------
+    tuple[np.ndarray, float] | list[np.ndarray]
+        If ``return_projections`` is False, the ``(mttkrp, norm_sq_err)``
+        pair for the requested ``mode``. If True, the list of per-condition
+        projection matrices ``P_k`` (each with orthonormal columns).
     """
     A, B, C = factors
     rank = B.shape[0]
@@ -169,6 +291,27 @@ def project_data(
 def standardize_pf2(
     factors: list[np.ndarray], projections: list[np.ndarray]
 ) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:
+    """Put a fitted PARAFAC2 model into a canonical, comparable form.
+
+    Reorders components by condition variance-to-mean ratio, normalizes and
+    sign-flips the factors (via TensorLy's ``cp_normalize``/``cp_flip_sign``),
+    permutes components to maximize the diagonal of ``B`` (via linear-sum
+    assignment), and flips signs so that ``B``'s diagonal is non-negative.
+
+    Parameters
+    ----------
+    factors : list[np.ndarray]
+        The fitted ``[A, B, C]`` factor matrices.
+    projections : list[np.ndarray]
+        The fitted per-condition projection matrices ``P_k``.
+
+    Returns
+    -------
+    tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]
+        The ``(weights, factors, projections)`` triple after standardization,
+        with components reordered/sign-flipped consistently across
+        ``factors`` and ``projections``.
+    """
     # Order components by condition variance-to-mean ratio
     gini = np.var(factors[0], axis=0) / np.mean(factors[0], axis=0)
     gini_idx = np.argsort(gini)
