@@ -39,4 +39,4 @@ The output of `parafac2_nd` is the first AnnData object and the reconstruction e
 5. We recommend implementing an embedding algorithm such as PaCMAP or UMAP on the `X.obsm["projections"]` to visualize cell-to-cell heterogeneity, creating a new columns coined `X.obsm["embedding"]` for example
 
 ## Examples
-You can find example scripts that load single-cell scRNA-seq data across conditions, implement Pf2, and various ways to interpret and plot Pf2 on Github via the [scCP repository](https://github.com/meyer-lab/scCP) (Basic familiarity with the python programming languages is recommended to navigate repository).
+You can find example scripts that load single-cell scRNA-seq data across conditions, implement Pf2, and various ways to interpret and plot Pf2 on Github via the [RISE repository](https://github.com/meyer-lab/RISE) (Basic familiarity with the python programming languages is recommended to navigate repository).
