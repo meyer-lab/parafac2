@@ -1,8 +1,8 @@
 # Integrative, high-resolution analysis of single cells across experimental conditions with PARAFAC2
 
-[![codecov](https://codecov.io/gh/meyer-lab/parafac2/branch/main/graph/badge.svg?token=srqQtzqc6V)](https://codecov.io/gh/meyer-lab/parafac2)
-
 `parafac2` contains the code for the PARAFAC2 (Pf2) python package, a tensor decomposition technique, used in our study for identifying variation patterns in single-cell populations across conditions. In our [study](https://www.biorxiv.org/content/10.1101/2024.07.29.605698v1.article-info), we discovered association patterns to specific cell populations, genes, and experimental conditions in both a drug perturbational study and systemic lupus erythematosus cohort study. 
+
+Full package documentation is available at [meyer-lab.github.io/parafac2](https://meyer-lab.github.io/parafac2/).
 
 ## Installation
 To install `parafac2` with standard CPU support:
