@@ -45,11 +45,12 @@ def prepare_dataset(
         expression values in ``X.var["means"]``.
     """
     assert issparse(X.X)
-    assert np.amin(X.X.data) >= 0.0
+    X_X_raw = cast("csr_array", X.X)
+    assert np.amin(X_X_raw.data) >= 0.0
 
     # Filter out genes with too few reads, and cells with fewer than 10 counts
-    cell_mask = np.ravel(X.X.sum(axis=1)) > 10
-    gene_mask = np.ravel(X.X.sum(axis=0)) > (geneThreshold * X.X.shape[0])
+    cell_mask = np.ravel(X_X_raw.sum(axis=1)) > 10
+    gene_mask = np.ravel(X_X_raw.sum(axis=0)) > (geneThreshold * X_X_raw.shape[0])
 
     # Subset and materialize actual AnnData object before modifying X.X
     if cell_mask.all() and gene_mask.all():

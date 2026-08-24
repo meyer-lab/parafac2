@@ -1,3 +1,12 @@
+"""
+GPU/CPU backend abstraction for matrix operations.
+
+Provides a unified interface for performing dense and sparse (CSR) matrix
+multiplications on CPU (NumPy), Apple GPUs (MLX), or NVIDIA GPUs (CuPy). This
+lets the PARAFAC2 fit run its matrix products on whichever accelerator is
+available without copying data through an intermediate common format.
+"""
+
 from typing import Any, cast
 
 import numpy as np
@@ -13,7 +22,26 @@ using namespace metal;
 
 
 def get_backend(backend: str | None = None) -> str:
-    """Return requested or first available backend ('mlx', 'cupy', or 'cpu')."""
+    """Return the requested backend, or auto-detect the first available one.
+
+    Parameters
+    ----------
+    backend : str, optional
+        One of ``'mlx'``, ``'cupy'``, or ``'cpu'``. If ``None``, the first
+        available accelerator is chosen by attempting to import ``cupy``
+        then ``mlx.core``, falling back to ``'cpu'`` if neither is
+        installed.
+
+    Returns
+    -------
+    str
+        The resolved backend name: ``'mlx'``, ``'cupy'``, or ``'cpu'``.
+
+    Raises
+    ------
+    ValueError
+        If ``backend`` is given but is not one of the supported names.
+    """
     if backend is not None:
         backend_lower = backend.lower()
         if backend_lower in ("mlx", "cupy", "cpu"):
@@ -23,14 +51,14 @@ def get_backend(backend: str | None = None) -> str:
         )
 
     try:
-        import cupy  # noqa: F401
+        import cupy  # noqa: F401  # ty: ignore[unresolved-import]
 
         return "cupy"
     except ImportError:
         pass
 
     try:
-        import mlx.core  # noqa: F401
+        import mlx.core  # noqa: F401  # ty: ignore[unresolved-import]
 
         return "mlx"
     except ImportError:
@@ -46,7 +74,28 @@ def _make_mlx_kernel(
     source: str,
     atomic_outputs: bool = False,
 ) -> Any:
-    import mlx.core as mx
+    """Compile an MLX Metal kernel from source.
+
+    Parameters
+    ----------
+    name : str
+        Name to register the kernel under.
+    input_names : list[str]
+        Names of the kernel's input buffers, matching the Metal source.
+    output_names : list[str]
+        Names of the kernel's output buffers.
+    source : str
+        Metal shader source implementing the kernel body.
+    atomic_outputs : bool, default False
+        Whether the output buffers must be written using atomic operations
+        (needed when multiple threads accumulate into the same output cell).
+
+    Returns
+    -------
+    Any
+        The compiled ``mx.fast.metal_kernel`` callable.
+    """
+    import mlx.core as mx  # ty: ignore[unresolved-import]
 
     return mx.fast.metal_kernel(
         name=name,
@@ -59,6 +108,16 @@ def _make_mlx_kernel(
 
 
 def _get_mlx_csr_spmm_kernel() -> Any:
+    """Return the cached MLX kernel for sparse (CSR) @ dense multiplication.
+
+    Compiles the kernel on first use and caches it in the module-level
+    ``_MLX_CSR_SPMM_KERNEL`` global for subsequent calls.
+
+    Returns
+    -------
+    Any
+        The compiled ``csr_spmm`` MLX kernel.
+    """
     global _MLX_CSR_SPMM_KERNEL
     if _MLX_CSR_SPMM_KERNEL is None:
         source = """
@@ -85,6 +144,18 @@ def _get_mlx_csr_spmm_kernel() -> Any:
 
 
 def _get_mlx_csr_atomic_rspmm_kernel() -> Any:
+    """Return the cached MLX kernel for dense @ sparse (CSR) multiplication.
+
+    The kernel accumulates into the (dense) output using atomic adds, since
+    multiple threads may write to the same output column. Compiles the
+    kernel on first use and caches it in the module-level
+    ``_MLX_CSR_ATOMIC_RSPMM_KERNEL`` global for subsequent calls.
+
+    Returns
+    -------
+    Any
+        The compiled ``dense_csr_spmm_atomic`` MLX kernel.
+    """
     global _MLX_CSR_ATOMIC_RSPMM_KERNEL
     if _MLX_CSR_ATOMIC_RSPMM_KERNEL is None:
         source = """
@@ -114,7 +185,19 @@ def _get_mlx_csr_atomic_rspmm_kernel() -> Any:
 
 
 def _csr_to_mlx(mat_csr: csr_array) -> tuple[Any, Any, Any]:
-    import mlx.core as mx
+    """Move a SciPy CSR array's components onto the MLX device.
+
+    Parameters
+    ----------
+    mat_csr : csr_array
+        The sparse matrix to transfer.
+
+    Returns
+    -------
+    tuple[Any, Any, Any]
+        The ``(data, indices, indptr)`` MLX arrays backing the CSR matrix.
+    """
+    import mlx.core as mx  # ty: ignore[unresolved-import]
 
     mx_data = mx.array(mat_csr.data.astype(np.float32, copy=False))
     mx_indices = mx.array(mat_csr.indices.astype(np.int32, copy=False))
@@ -123,7 +206,24 @@ def _csr_to_mlx(mat_csr: csr_array) -> tuple[Any, Any, Any]:
 
 
 def _mlx_to_numpy(mx_out: Any, orig_dtype: np.dtype, is_1d: bool) -> np.ndarray:
-    import mlx.core as mx
+    """Evaluate an MLX array and convert it to a NumPy array.
+
+    Parameters
+    ----------
+    mx_out : Any
+        The (possibly lazy) MLX array to materialize.
+    orig_dtype : np.dtype
+        The dtype the result should be cast back to.
+    is_1d : bool
+        Whether the result should be raveled to a 1-D array (used when the
+        original operand was a 1-D vector promoted to 2-D for the kernel).
+
+    Returns
+    -------
+    np.ndarray
+        The result as a NumPy array of ``orig_dtype``.
+    """
+    import mlx.core as mx  # ty: ignore[unresolved-import]
 
     mx.eval(mx_out)
     res_arr = np.asarray(mx_out).astype(orig_dtype, copy=False)
@@ -131,7 +231,20 @@ def _mlx_to_numpy(mx_out: Any, orig_dtype: np.dtype, is_1d: bool) -> np.ndarray:
 
 
 def _to_mlx_matrix(mat: np.ndarray | csr_array) -> Any:
-    import mlx.core as mx
+    """Move a dense or CSR matrix onto the MLX device.
+
+    Parameters
+    ----------
+    mat : np.ndarray | csr_array
+        The matrix to transfer.
+
+    Returns
+    -------
+    Any
+        An ``mx.array`` for dense input, or the ``(data, indices, indptr)``
+        MLX array tuple for sparse input.
+    """
+    import mlx.core as mx  # ty: ignore[unresolved-import]
 
     if issparse(mat):
         return _csr_to_mlx(cast("csr_array", mat))
@@ -141,7 +254,29 @@ def _to_mlx_matrix(mat: np.ndarray | csr_array) -> Any:
 def _matmul_mlx(
     device_mat: Any, rhs: np.ndarray, is_sparse: bool, shape: tuple[int, int]
 ) -> np.ndarray:
-    import mlx.core as mx
+    """Compute ``device_mat @ rhs`` on the MLX backend.
+
+    Dispatches to the CSR sparse-matrix-multiply kernel when ``is_sparse``
+    is set, otherwise uses MLX's native dense matmul.
+
+    Parameters
+    ----------
+    device_mat : Any
+        The left-hand matrix already resident on the MLX device, as
+        returned by :func:`_to_mlx_matrix`.
+    rhs : np.ndarray
+        The right-hand operand (1-D or 2-D NumPy array).
+    is_sparse : bool
+        Whether ``device_mat`` represents a sparse CSR matrix.
+    shape : tuple[int, int]
+        The logical ``(rows, cols)`` shape of ``device_mat``.
+
+    Returns
+    -------
+    np.ndarray
+        The product, as a NumPy array with the same dtype as ``rhs``.
+    """
+    import mlx.core as mx  # ty: ignore[unresolved-import]
 
     orig_dtype = rhs.dtype
     M, _N = shape
@@ -173,7 +308,29 @@ def _matmul_mlx(
 def _rmatmul_mlx(
     lhs: np.ndarray, device_mat: Any, is_sparse: bool, shape: tuple[int, int]
 ) -> np.ndarray:
-    import mlx.core as mx
+    """Compute ``lhs @ device_mat`` on the MLX backend.
+
+    Dispatches to the atomic CSR sparse-matrix-multiply kernel when
+    ``is_sparse`` is set, otherwise uses MLX's native dense matmul.
+
+    Parameters
+    ----------
+    lhs : np.ndarray
+        The left-hand operand (1-D or 2-D NumPy array).
+    device_mat : Any
+        The right-hand matrix already resident on the MLX device, as
+        returned by :func:`_to_mlx_matrix`.
+    is_sparse : bool
+        Whether ``device_mat`` represents a sparse CSR matrix.
+    shape : tuple[int, int]
+        The logical ``(rows, cols)`` shape of ``device_mat``.
+
+    Returns
+    -------
+    np.ndarray
+        The product, as a NumPy array with the same dtype as ``lhs``.
+    """
+    import mlx.core as mx  # ty: ignore[unresolved-import]
 
     orig_dtype = lhs.dtype
     M, N = shape
@@ -210,8 +367,21 @@ def _rmatmul_mlx(
 
 
 def _to_cupy_matrix(mat: np.ndarray | csr_array) -> Any:
-    import cupy as cp
-    import cupyx.scipy.sparse as cpsparse
+    """Move a dense or CSR matrix onto the CuPy device.
+
+    Parameters
+    ----------
+    mat : np.ndarray | csr_array
+        The matrix to transfer.
+
+    Returns
+    -------
+    Any
+        A CuPy ``ndarray`` for dense input, or a
+        ``cupyx.scipy.sparse.csr_matrix`` for sparse input.
+    """
+    import cupy as cp  # ty: ignore[unresolved-import]
+    import cupyx.scipy.sparse as cpsparse  # ty: ignore[unresolved-import]
 
     if issparse(mat):
         mat_csr = cast("csr_array", mat)
@@ -225,7 +395,22 @@ def _to_cupy_matrix(mat: np.ndarray | csr_array) -> Any:
 
 
 def _matmul_cupy(cp_mat: Any, rhs: np.ndarray) -> np.ndarray:
-    import cupy as cp
+    """Compute ``cp_mat @ rhs`` on the CuPy backend.
+
+    Parameters
+    ----------
+    cp_mat : Any
+        The left-hand matrix already resident on the CuPy device, as
+        returned by :func:`_to_cupy_matrix`.
+    rhs : np.ndarray
+        The right-hand operand.
+
+    Returns
+    -------
+    np.ndarray
+        The product, transferred back to host memory as a NumPy array.
+    """
+    import cupy as cp  # ty: ignore[unresolved-import]
 
     cp_rhs = cp.asarray(rhs)
     cp_res = cp_mat @ cp_rhs
@@ -233,7 +418,22 @@ def _matmul_cupy(cp_mat: Any, rhs: np.ndarray) -> np.ndarray:
 
 
 def _rmatmul_cupy(lhs: np.ndarray, cp_mat: Any) -> np.ndarray:
-    import cupy as cp
+    """Compute ``lhs @ cp_mat`` on the CuPy backend.
+
+    Parameters
+    ----------
+    lhs : np.ndarray
+        The left-hand operand.
+    cp_mat : Any
+        The right-hand matrix already resident on the CuPy device, as
+        returned by :func:`_to_cupy_matrix`.
+
+    Returns
+    -------
+    np.ndarray
+        The product, transferred back to host memory as a NumPy array.
+    """
+    import cupy as cp  # ty: ignore[unresolved-import]
 
     cp_lhs = cp.asarray(lhs)
     cp_res = cp_lhs @ cp_mat
@@ -245,11 +445,20 @@ class GPUMatrix:
     Wrapper for a single matrix (csr_array or np.ndarray) stored on GPU memory
     (CuPy or MLX) or CPU. Evaluates matrix products on the device and returns
     results as NumPy ndarrays.
+
+    Parameters
+    ----------
+    mat : np.ndarray | csr_array
+        The matrix to wrap and transfer to the selected device.
+    backend : str, optional
+        One of ``'mlx'``, ``'cupy'``, or ``'cpu'``. If ``None``, the first
+        available accelerator is auto-detected (see :func:`get_backend`).
     """
 
     __array_priority__ = 1000
 
     def __init__(self, mat: np.ndarray | csr_array, backend: str | None = None) -> None:
+        """Transfer ``mat`` to the resolved backend's device memory."""
         self.backend = get_backend(backend)
         self.shape = mat.shape
         self.dtype = mat.dtype
@@ -263,7 +472,18 @@ class GPUMatrix:
             self.device_mat = mat
 
     def matmul(self, rhs: np.ndarray) -> np.ndarray:
-        """Compute self @ rhs and return NumPy array."""
+        """Compute ``self @ rhs`` on the wrapped device.
+
+        Parameters
+        ----------
+        rhs : np.ndarray
+            The right-hand operand.
+
+        Returns
+        -------
+        np.ndarray
+            The product, as a NumPy array.
+        """
         if self.backend == "cupy":
             return _matmul_cupy(self.device_mat, rhs)
         elif self.backend == "mlx":
@@ -273,7 +493,18 @@ class GPUMatrix:
         return self.device_mat @ rhs
 
     def rmatmul(self, lhs: np.ndarray) -> np.ndarray:
-        """Compute lhs @ self and return NumPy array."""
+        """Compute ``lhs @ self`` on the wrapped device.
+
+        Parameters
+        ----------
+        lhs : np.ndarray
+            The left-hand operand.
+
+        Returns
+        -------
+        np.ndarray
+            The product, as a NumPy array.
+        """
         if self.backend == "cupy":
             return _rmatmul_cupy(lhs, self.device_mat)
         elif self.backend == "mlx":
@@ -283,9 +514,11 @@ class GPUMatrix:
         return lhs @ self.device_mat
 
     def __matmul__(self, rhs: np.ndarray) -> np.ndarray:
+        """Operator form of :meth:`matmul`, enabling ``gpu_matrix @ rhs``."""
         return self.matmul(rhs)
 
     def __rmatmul__(self, lhs: np.ndarray) -> np.ndarray:
+        """Operator form of :meth:`rmatmul`, enabling ``lhs @ gpu_matrix``."""
         return self.rmatmul(lhs)
 
 
@@ -295,6 +528,20 @@ def to_gpu(
     """
     Transfer matrix to GPU memory if CuPy or MLX is requested/available,
     returning a GPUMatrix wrapper. Otherwise returns the CPU matrix as-is.
+
+    Parameters
+    ----------
+    mat : np.ndarray | csr_array
+        The matrix to (optionally) transfer.
+    backend : str, optional
+        One of ``'mlx'``, ``'cupy'``, or ``'cpu'``. If ``None``, the first
+        available accelerator is auto-detected (see :func:`get_backend`).
+
+    Returns
+    -------
+    GPUMatrix | np.ndarray | csr_array
+        A :class:`GPUMatrix` wrapping ``mat`` if a GPU backend was resolved,
+        otherwise ``mat`` unchanged.
     """
     chosen = get_backend(backend)
     if chosen == "cpu":
