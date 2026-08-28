@@ -9,16 +9,20 @@ cores.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
-import anndata
 import numpy as np
 
 from .backend import to_gpu
-from .utils import calc_norm_sq, calc_slice_norms
+from .utils import (
+    calc_W,
+    extract_dataset_info,
+    polar_factor,
+    randomized_svd_right,
+)
 
 if TYPE_CHECKING:
-    from scipy.sparse import csr_array
+    import anndata
 
 
 @dataclass
@@ -106,40 +110,18 @@ def compress_genes(
         ``(total_cells, L_g)``, ``Q`` is ``(n_genes, L_g)`` orthonormal, and
         ``norm_Xc_sq`` is the squared Frobenius norm of ``X_c``.
     """
-    rng = (
-        random_state
-        if isinstance(random_state, np.random.Generator)
-        else np.random.default_rng(random_state)
-    )
     _n_cells, n_genes = X.shape
     L_g = min(n_genes, L_g)
 
-    def centered_matmul(R: np.ndarray) -> np.ndarray:
-        Y = (X @ R).astype(np.float64)
-        return Y - (means @ R).astype(np.float64) if means is not None else Y
-
-    def centered_rmatmul(L: np.ndarray) -> np.ndarray:
-        Z_T = (L @ X).astype(np.float64)
-        if means is not None:
-            Z_T -= np.outer(np.sum(L, axis=1), means).astype(np.float64)
-        return Z_T
-
-    Omega = rng.normal(size=(n_genes, L_g)).astype(np.float64)
-    Y = centered_matmul(Omega)
-
-    for _ in range(n_power_iter):
-        Q_Y, _ = np.linalg.qr(Y, mode="reduced")
-        Z = centered_rmatmul(Q_Y.T).T
-        Q_Z, _ = np.linalg.qr(Z, mode="reduced")
-        Y = centered_matmul(Q_Z)
-
-    Q_Y, _ = np.linalg.qr(Y, mode="reduced")
-    B_svd = centered_rmatmul(Q_Y.T)
-
-    _, _, vh = np.linalg.svd(B_svd, full_matrices=False)
-    Q = vh[:L_g, :].T.astype(np.float64)
-
-    X_c = centered_matmul(Q)
+    Q = randomized_svd_right(
+        X,
+        means,
+        n_components=L_g,
+        n_oversamples=0,
+        n_power_iter=n_power_iter,
+        random_state=random_state,
+    )
+    X_c = calc_W(X, means, Q)
     norm_Xc_sq = float(np.sum(X_c**2))
 
     return X_c, Q, norm_Xc_sq
@@ -238,23 +220,15 @@ def compress_dataset(
     CompressedData
         The compressed dataset ready for fast PARAFAC2 fitting.
     """
-    assert X_in.X is not None
-    X_mat = cast("np.ndarray | csr_array", X_in.X)
-    sgIndex = cast("np.ndarray", X_in.obs["condition_unique_idxs"].to_numpy(dtype=int))
-    n_cond = int(np.amax(sgIndex)) + 1
+    (
+        X_mat,
+        condition_unique_idxs,
+        means,
+        norm_tensor,
+        slice_weights,
+    ) = extract_dataset_info(X_in, normalize_slices=normalize_slices)
     total_cells, n_genes = X_mat.shape
-
-    if "means" in X_in.var:
-        means = X_in.var["means"].to_numpy()
-    else:
-        means = np.zeros(n_genes)
-
-    norm_tensor = calc_norm_sq(X_mat, means)
-
-    slice_weights: np.ndarray | None = None
-    if normalize_slices:
-        slice_norms = calc_slice_norms(X_mat, means, sgIndex, n_cond)
-        slice_weights = np.where(slice_norms > 1e-10, 1.0 / slice_norms, 1.0)
+    n_cond = int(np.amax(condition_unique_idxs)) + 1
 
     # Determine L_g and L_c
     target_rank = rank if rank is not None else 30
@@ -281,7 +255,7 @@ def compress_dataset(
 
     cores, Q_k, norm_cores_sq = compress_cells(
         X_c,
-        sgIndex,
+        condition_unique_idxs,
         L_c=L_c_val,
     )
 
@@ -291,7 +265,7 @@ def compress_dataset(
         cores=cores,
         Q=Q,
         Q_k=Q_k,
-        condition_unique_idxs=sgIndex,
+        condition_unique_idxs=condition_unique_idxs,
         norm_tensor=norm_tensor,
         lost_var=lost_var,
         total_cells=total_cells,
@@ -372,14 +346,8 @@ def project_data_compressed(
     for i in range(n_cond):
         Y_i = cores[i]
         W_i = Y_i @ C_L  # (L_c_i, rank)
-        T_i = (B * A[i]).T  # (rank, rank)
-        M = W_i @ T_i  # (L_c_i, rank)
-        G = M.T @ M  # (rank, rank)
-        _, V = np.linalg.eigh(G)
-        MV = M @ V
-        col_norms = np.linalg.norm(MV, axis=0, keepdims=True)
-        safe_norms = np.where(col_norms > 1e-10, col_norms, 1.0)
-        proj = (MV / safe_norms) @ V.T
+        M = W_i @ (B * A[i]).T  # (L_c_i, rank)
+        proj = polar_factor(M)
         proj_list.append(proj)
 
         if return_projections:
