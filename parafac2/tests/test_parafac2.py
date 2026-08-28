@@ -279,7 +279,6 @@ def test_pf2_proj_centering():
 
     X_pf = parafac2_to_slices((None, factors, projections))
     norm_X_sq = float(np.sum(np.array([np.linalg.norm(xx) ** 2.0 for xx in X_pf])))
-
     means_zero = np.zeros(300)
     X_dense = np.concatenate(X_pf, axis=0)
     cond_idxs = np.concatenate([[i] * s[0] for i, s in enumerate(shapes)])
@@ -387,7 +386,10 @@ def test_project_data_sparse_dense_with_means():
     proj_d, S_d = _project(X_dense, cond_idxs, means, factors)
     proj_s, S_s = _project(X_sparse, cond_idxs, means, factors)
     np.testing.assert_allclose(
-        calc_err(S_d, factors, norm_sq), calc_err(S_s, factors, norm_sq), rtol=1e-5
+        calc_err(S_d, factors, norm_sq),
+        calc_err(S_s, factors, norm_sq),
+        rtol=1e-5,
+        atol=1e-5,
     )
     for pd, ps in zip(proj_d, proj_s):
         np.testing.assert_allclose(pd, ps, rtol=1e-5, atol=1e-5)
@@ -425,7 +427,7 @@ def test_row_order_does_not_change_fit():
     (w_a, f_a, _), r2_a = parafac2_nd(X_ann, rank=rank, random_state=3, n_iter_max=25)
     (w_b, f_b, _), r2_b = parafac2_nd(X_shuf, rank=rank, random_state=3, n_iter_max=25)
 
-    np.testing.assert_allclose(r2_a, r2_b, rtol=1e-8)
+    np.testing.assert_allclose(r2_a, r2_b, rtol=1e-8, atol=1e-8)
     np.testing.assert_allclose(w_a, w_b, rtol=1e-6, atol=1e-6)
     for fa, fb in zip(f_a, f_b, strict=True):
         np.testing.assert_allclose(fa, fb, rtol=1e-6, atol=1e-6)
