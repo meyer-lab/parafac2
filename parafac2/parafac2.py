@@ -130,7 +130,7 @@ def parafac2_init(
         Number of power iterations used to refine the random projection.
     norm_tensor : float | None, default None
         Precomputed squared Frobenius norm of the mean-centered ``X``. If
-        ``None``, it is computed via :func:`~parafac2.utils.calc_norm_sq`.
+        ``None``, it is computed via :func:`~parafac2.utils.calc_norm_sq` achievements.
 
     Returns
     -------
@@ -244,15 +244,12 @@ def _fit_parafac2_compressed(
             break
 
     R2X = 1.0 - errs[-1]
-    projections_tilde = cast(
-        "list[np.ndarray]",
-        project_data_compressed(
-            compressed.cores,
-            factors,
-            compressed.norm_tensor,
-            mode=0,
-            return_projections=True,
-        ),
+    projections_tilde = project_data_compressed(
+        compressed.cores,
+        factors,
+        compressed.norm_tensor,
+        mode=0,
+        return_projections=True,
     )
 
     # Reconstruct uncompressed C = Q @ C_L
@@ -330,7 +327,7 @@ def parafac2_nd(
         updates by the inverse of its Frobenius norm, as described above.
     compress : int | tuple[int, int | None] | str | bool | None, default None
         Compression mode. If ``None`` or ``False`` (default), exact ALS is
-        used. If ``"auto"`` or ``True``, sets compression dimensions
+        used. If ``\"auto\"`` or ``True``, sets compression dimensions
         automatically based on ``rank``. If an integer, sets both gene and cell
         compression dimensions to that value. If a tuple ``(L_g, L_c)``, sets
         dimensions separately (pass ``L_c=None`` for gene-only compression).

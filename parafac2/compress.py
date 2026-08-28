@@ -9,7 +9,7 @@ cores.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 import anndata
 import numpy as np
@@ -301,6 +301,28 @@ def compress_dataset(
         means=means,
         adata=X_in,
     )
+
+
+@overload
+def project_data_compressed(
+    cores: list[np.ndarray],
+    factors: list[np.ndarray],
+    norm_tensor: float,
+    mode: int,
+    return_projections: Literal[False] = False,
+    slice_weights: np.ndarray | None = None,
+) -> tuple[np.ndarray, float]: ...
+
+
+@overload
+def project_data_compressed(
+    cores: list[np.ndarray],
+    factors: list[np.ndarray],
+    norm_tensor: float,
+    mode: int,
+    return_projections: Literal[True],
+    slice_weights: np.ndarray | None = None,
+) -> list[np.ndarray]: ...
 
 
 def project_data_compressed(
