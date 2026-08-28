@@ -10,6 +10,10 @@
 
 ::: parafac2.normalize
 
+## parafac2.compress
+
+::: parafac2.compress
+
 ## parafac2.utils
 
 ::: parafac2.utils

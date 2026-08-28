@@ -57,4 +57,5 @@ markdown_extensions:
 
 nav:
   - Overview: index.md
+  - Compression Tutorial: compression.md
   - API Reference: api.md

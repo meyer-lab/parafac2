@@ -2,10 +2,13 @@
 Core PARAFAC2 decomposition routines.
 
 Implements PARAFAC2 initialization (randomized SVD), the alternating-least-
-squares fitting loop, and standardization/storage of the fitted factors and
-per-condition projections. Operates directly on a single (optionally sparse)
-data matrix held in an AnnData object, avoiding per-condition copies.
+squares fitting loop, CANDELINC-style compression, and standardization/storage
+of the fitted factors and per-condition projections. Operates directly on a
+single (optionally sparse) data matrix held in an AnnData object, avoiding
+per-condition copies.
 """
+
+from __future__ import annotations
 
 import os
 from collections.abc import Callable
@@ -16,6 +19,12 @@ import numpy as np
 from tqdm import tqdm
 
 from .backend import to_gpu
+from .compress import (
+    CompressedData,
+    compress_dataset,
+    init_compressed_factors,
+    project_data_compressed,
+)
 
 if TYPE_CHECKING:
     from scipy.sparse import csr_array
@@ -30,17 +39,19 @@ from .utils import (
 
 
 def store_pf2(
-    X: anndata.AnnData,
+    X: anndata.AnnData | CompressedData,
     parafac2_output: tuple[np.ndarray, list[np.ndarray], list[np.ndarray]],
 ) -> anndata.AnnData:
     """Store the Pf2 results into the anndata object.
 
     Parameters
     ----------
-    X : anndata.AnnData
+    X : anndata.AnnData | CompressedData
         The dataset the factorization was fit on. Must have
         ``X.obs["condition_unique_idxs"]`` set (as produced by
-        :func:`~parafac2.normalize.prepare_dataset` or equivalent).
+        :func:`~parafac2.normalize.prepare_dataset` or equivalent). If a
+        :class:`~parafac2.compress.CompressedData` is provided, factors are
+        written to its underlying ``.adata`` object.
     parafac2_output : tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]
         The ``(weights, factors, projections)`` output of :func:`parafac2_nd`,
         where ``factors`` is the ``[A, B, C]`` factor matrices and
@@ -49,27 +60,37 @@ def store_pf2(
     Returns
     -------
     anndata.AnnData
-        ``X``, mutated in place, with the weights in ``X.uns["Pf2_weights"]``,
-        factors in ``X.uns["Pf2_A"]``/``X.uns["Pf2_B"]``/``X.varm["Pf2_C"]``,
-        and per-cell projections in ``X.obsm["projections"]`` and
+        The target AnnData object, mutated in place, with the weights in
+        ``X.uns["Pf2_weights"]``, factors in
+        ``X.uns["Pf2_A"]``/``X.uns["Pf2_B"]``/``X.varm["Pf2_C"]``, and
+        per-cell projections in ``X.obsm["projections"]`` and
         ``X.obsm["weighted_projections"]`` (projections composed with ``B``).
     """
-    sgIndex = X.obs["condition_unique_idxs"]
+    if isinstance(X, CompressedData):
+        if X.adata is None:
+            raise ValueError("CompressedData has no associated AnnData object.")
+        target_adata = X.adata
+        sgIndex = X.condition_unique_idxs
+    else:
+        target_adata = X
+        sgIndex = target_adata.obs["condition_unique_idxs"]
 
-    X.uns["Pf2_weights"] = parafac2_output[0]
-    X.uns["Pf2_A"], X.uns["Pf2_B"], X.varm["Pf2_C"] = parafac2_output[1]
+    target_adata.uns["Pf2_weights"] = parafac2_output[0]
+    target_adata.uns["Pf2_A"], target_adata.uns["Pf2_B"], target_adata.varm["Pf2_C"] = (
+        parafac2_output[1]
+    )
 
-    X.obsm["projections"] = np.zeros(
-        (X.shape[0], len(X.uns["Pf2_weights"])), dtype=np.float32
+    target_adata.obsm["projections"] = np.zeros(
+        (target_adata.shape[0], len(target_adata.uns["Pf2_weights"])), dtype=np.float32
     )
     for i, p in enumerate(parafac2_output[2]):
-        X.obsm["projections"][sgIndex == i, :] = p
+        target_adata.obsm["projections"][sgIndex == i, :] = p
 
-    X.obsm["weighted_projections"] = (X.obsm["projections"] @ X.uns["Pf2_B"]).astype(
-        np.float32, copy=False
-    )
+    target_adata.obsm["weighted_projections"] = (
+        target_adata.obsm["projections"] @ target_adata.uns["Pf2_B"]
+    ).astype(np.float32, copy=False)
 
-    return X
+    return target_adata
 
 
 def parafac2_init(
@@ -109,7 +130,7 @@ def parafac2_init(
         Number of power iterations used to refine the random projection.
     norm_tensor : float | None, default None
         Precomputed squared Frobenius norm of the mean-centered ``X``. If
-        ``None``, it is computed via :func:`~parafac2.utils.calc_norm_sq`.
+        ``None``, it is computed via :func:`~parafac2.utils.calc_norm_sq` achievements.
 
     Returns
     -------
@@ -166,8 +187,90 @@ def parafac2_init(
     return factors, norm_tensor
 
 
+def _fit_parafac2_compressed(
+    compressed: CompressedData,
+    rank: int,
+    n_iter_max: int = 100,
+    tol: float = 1e-6,
+    random_state: int | None = None,
+    callback: Callable[[int, float, list[np.ndarray]], None] | None = None,
+    verbose: bool = True,
+) -> tuple[tuple[np.ndarray, list[np.ndarray], list[np.ndarray]], float]:
+    """Internal fitting loop over compressed cores."""
+    if rank > compressed.L_g:
+        raise ValueError(
+            f"Rank ({rank}) cannot exceed gene compression dimension L_g ({compressed.L_g})."
+        )
+    if compressed.Q_k is not None and rank > compressed.max_cell_dim:
+        raise ValueError(
+            f"Rank ({rank}) cannot exceed max cell compression dimension ({compressed.max_cell_dim})."
+        )
+
+    factors = init_compressed_factors(compressed.cores, rank, random_state=random_state)
+
+    mttkrp, err = project_data_compressed(
+        compressed.cores,
+        factors,
+        compressed.norm_tensor,
+        mode=0,
+        slice_weights=compressed.slice_weights,
+    )
+    errs = [err]
+
+    tq = tqdm(range(n_iter_max), disable=(not verbose), delay=0.5)
+    for iteration in tq:
+        for mode in range(len(factors)):
+            factors = parafac_update(
+                factors,
+                mttkrp,
+                mode,
+            )
+            mttkrp, err = project_data_compressed(
+                compressed.cores,
+                factors,
+                compressed.norm_tensor,
+                mode=(mode + 1) % len(factors),
+                slice_weights=compressed.slice_weights,
+            )
+
+        errs.append(err / compressed.norm_tensor)
+
+        delta = errs[-2] - errs[-1]
+        tq.set_postfix(error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, refresh=False)
+        if callback is not None:
+            callback(iteration, errs[-1], factors)
+
+        if 0 <= delta < tol:
+            break
+
+    R2X = 1.0 - errs[-1]
+    projections_tilde = project_data_compressed(
+        compressed.cores,
+        factors,
+        compressed.norm_tensor,
+        mode=0,
+        return_projections=True,
+    )
+
+    # Reconstruct uncompressed C = Q @ C_L
+    A, B, C_L = factors
+    C = compressed.Q @ C_L
+    full_factors = [A, B, C]
+
+    # Reconstruct projections P_k = Q_k @ P_tilde_k
+    if compressed.Q_k is not None:
+        projections = [
+            (Q_k @ P_tilde) if Q_k is not None else P_tilde
+            for Q_k, P_tilde in zip(compressed.Q_k, projections_tilde, strict=True)
+        ]
+    else:
+        projections = projections_tilde
+
+    return standardize_pf2(full_factors, projections), R2X
+
+
 def parafac2_nd(
-    X_in: anndata.AnnData,
+    X_in: anndata.AnnData | CompressedData,
     rank: int,
     n_iter_max: int = 100,
     tol: float = 1e-6,
@@ -175,8 +278,14 @@ def parafac2_nd(
     callback: Callable[[int, float, list[np.ndarray]], None] | None = None,
     backend: str | None = None,
     normalize_slices: bool = False,
+    compress: int | tuple[int, int | None] | str | bool | None = None,
 ) -> tuple[tuple[np.ndarray, list[np.ndarray], list[np.ndarray]], float]:
-    r"""The same interface as regular PARAFAC2.
+    r"""The same interface as regular PARAFAC2 with optional CANDELINC compression.
+
+    If ``compress`` is specified (or if ``X_in`` is already a
+    :class:`~parafac2.compress.CompressedData`), PARAFAC2 is fit in the
+    compressed subspace (Bro's "compress-then-fit"), eliminating per-sweep raw
+    data passes.
 
     If ``normalize_slices`` is True, each condition's contribution to the
     factor updates is rescaled by the inverse of its (mean-centered)
@@ -189,11 +298,12 @@ def parafac2_nd(
 
     Parameters
     ----------
-    X_in : anndata.AnnData
+    X_in : anndata.AnnData | CompressedData
         Input dataset with the (optionally sparse) data matrix in ``X_in.X``,
         condition labels in ``X_in.obs["condition_unique_idxs"]``, and
         optionally per-gene means in ``X_in.var["means"]`` (defaults to zero,
-        i.e. no centering, if absent).
+        i.e. no centering, if absent). Alternatively, a pre-compressed
+        :class:`~parafac2.compress.CompressedData` object.
     rank : int
         The number of components to fit.
     n_iter_max : int, default 100
@@ -215,6 +325,14 @@ def parafac2_nd(
     normalize_slices : bool, default False
         Whether to rescale each condition's contribution to the factor
         updates by the inverse of its Frobenius norm, as described above.
+    compress : int | tuple[int, int | None] | str | bool | None, default None
+        Compression mode. If ``None`` or ``False`` (default), exact ALS is
+        used. If ``\"auto\"`` or ``True``, sets compression dimensions
+        automatically based on ``rank``. If an integer, sets both gene and cell
+        compression dimensions to that value. If a tuple ``(L_g, L_c)``, sets
+        dimensions separately (pass ``L_c=None`` for gene-only compression).
+        Ignored if ``X_in`` is already a
+        :class:`~parafac2.compress.CompressedData`.
 
     Returns
     -------
@@ -226,6 +344,36 @@ def parafac2_nd(
     """
     # Verbose if this is not an automated build
     verbose = "CI" not in os.environ
+
+    if isinstance(X_in, CompressedData):
+        return _fit_parafac2_compressed(
+            X_in,
+            rank=rank,
+            n_iter_max=n_iter_max,
+            tol=tol,
+            random_state=random_state,
+            callback=callback,
+            verbose=verbose,
+        )
+
+    if compress is not None and compress is not False:
+        compressed = compress_dataset(
+            X_in,
+            L=compress,
+            rank=rank,
+            random_state=random_state,
+            normalize_slices=normalize_slices,
+            backend=backend,
+        )
+        return _fit_parafac2_compressed(
+            compressed,
+            rank=rank,
+            n_iter_max=n_iter_max,
+            tol=tol,
+            random_state=random_state,
+            callback=callback,
+            verbose=verbose,
+        )
 
     assert X_in.X is not None
     X_mat = cast("np.ndarray | csr_array", X_in.X)
