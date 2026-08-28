@@ -20,6 +20,8 @@ factor updates can be recomputed from a cached ``W`` without re-reading the
 data.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -33,7 +35,7 @@ if TYPE_CHECKING:
     from scipy.sparse import csr_array
 
 
-def calc_norm_sq(X: "np.ndarray | csr_array", means: np.ndarray | None = None) -> float:
+def calc_norm_sq(X: np.ndarray | csr_array, means: np.ndarray | None = None) -> float:
     """Return the squared Frobenius norm of the mean-centered matrix.
 
     Parameters
@@ -67,7 +69,7 @@ def calc_norm_sq(X: "np.ndarray | csr_array", means: np.ndarray | None = None) -
 
 
 def calc_slice_norms(
-    X: "np.ndarray | csr_array",
+    X: np.ndarray | csr_array,
     means: np.ndarray | None,
     condition_unique_idxs: np.ndarray,
     n_cond: int,
@@ -269,6 +271,26 @@ def calc_err(S: np.ndarray, factors: list[np.ndarray], norm_X_sq: float) -> floa
     return norm_sq_err
 
 
+def solve_factors(
+    factors: list[np.ndarray],
+    mttkrp: np.ndarray,
+    mode: int,
+) -> list[np.ndarray]:
+    """ALS factor update for a single mode using its precomputed MTTKRP."""
+    rank = factors[0].shape[1]
+    v = np.ones((rank, rank))
+    for i, factor in enumerate(factors):
+        if i != mode:
+            v *= factor.T @ factor
+
+    try:
+        factors[mode] = np.linalg.solve(v.T, mttkrp.T).T
+    except np.linalg.LinAlgError:
+        factors[mode] = np.linalg.lstsq(v.T, mttkrp.T, rcond=None)[0].T
+
+    return factors
+
+
 def parafac_update(
     factors: list[np.ndarray],
     mode: int,
@@ -355,18 +377,7 @@ def parafac_update(
             mttkrp_T -= np.outer(H_T.sum(axis=1), means)
         mttkrp = mttkrp_T.T
 
-    # Compute Gram matrix product using current factors
-    v = np.ones((rank, rank))
-    for i, factor in enumerate(factors):
-        if i != mode:
-            v *= factor.T @ factor
-
-    try:
-        factors[mode] = np.linalg.solve(v.T, mttkrp.T).T
-    except np.linalg.LinAlgError:
-        factors[mode] = np.linalg.lstsq(v.T, mttkrp.T, rcond=None)[0].T
-
-    return factors
+    return solve_factors(factors, mttkrp, mode)
 
 
 def standardize_pf2(
