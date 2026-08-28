@@ -22,6 +22,12 @@ parafac2.utils
 .. automodule:: parafac2.utils
    :members:
 
+parafac2.compress
+------------------
+
+.. automodule:: parafac2.compress
+   :members:
+
 parafac2.backend
 -----------------
 
