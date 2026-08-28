@@ -32,6 +32,7 @@ from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 from .backend import matmul, matrix_dtype, rmatmul
 
 if TYPE_CHECKING:
+    import anndata
     from scipy.sparse import csr_array
 
 
@@ -193,6 +194,16 @@ def calc_W(X: Any, means: np.ndarray | None, C: np.ndarray) -> np.ndarray:
     return W
 
 
+def polar_factor(M: np.ndarray) -> np.ndarray:
+    """Compute the nearest orthonormal matrix to M via polar decomposition."""
+    G = M.T @ M
+    _, V = np.linalg.eigh(G)
+    MV = M @ V
+    col_norms = np.linalg.norm(MV, axis=0, keepdims=True)
+    safe_norms = np.where(col_norms > 1e-10, col_norms, 1.0)
+    return (MV / safe_norms) @ V.T
+
+
 def project_data(
     W: np.ndarray,
     factors: list[np.ndarray],
@@ -231,12 +242,7 @@ def project_data(
     for i, sel in enumerate(cond_slices):
         W_i = W[sel]
         M = W_i @ (B * A[i]).T  # (n_k, rank)
-        G = M.T @ M  # (rank, rank)
-        _, V = np.linalg.eigh(G)
-        MV = M @ V  # ≈ U @ S @ D, orthogonal columns
-        col_norms = np.linalg.norm(MV, axis=0, keepdims=True)
-        safe_norms = np.where(col_norms > 1e-10, col_norms, 1.0)
-        proj = (MV / safe_norms) @ V.T  # D cancels -> U @ Vh
+        proj = polar_factor(M)
         projections.append(proj)
         S[i] = proj.T @ W_i
 
@@ -405,7 +411,13 @@ def standardize_pf2(
         ``factors`` and ``projections``.
     """
     # Order components by condition variance-to-mean ratio
-    gini = np.var(factors[0], axis=0) / np.mean(factors[0], axis=0)
+    mean_a = np.mean(factors[0], axis=0)
+    gini = np.divide(
+        np.var(factors[0], axis=0),
+        mean_a,
+        out=np.zeros_like(mean_a),
+        where=np.abs(mean_a) > 1e-12,
+    )
     gini_idx = np.argsort(gini)
     factors = [f[:, gini_idx] for f in factors]
 
@@ -422,3 +434,107 @@ def standardize_pf2(
     projections = [p * signn for p in projections]
 
     return weights, factors, projections
+
+
+def randomized_svd_right(
+    X: Any,
+    means: np.ndarray | None,
+    n_components: int,
+    n_oversamples: int = 0,
+    n_power_iter: int = 2,
+    random_state: int | np.random.Generator | None = None,
+) -> np.ndarray:
+    """Compute the top right-singular vectors of the mean-centered matrix ``(X - 1 mu^T)``.
+
+    Parameters
+    ----------
+    X : Any
+        The (optionally sparse or GPU-backed) data matrix of shape
+        ``(total_cells, n_genes)``.
+    means : np.ndarray | None
+        Per-gene means for implicit centering, or ``None``.
+    n_components : int
+        Number of right-singular vectors to return.
+    n_oversamples : int, default 0
+        Additional random test vectors for randomized SVD projection.
+    n_power_iter : int, default 2
+        Number of power iterations for subspace refinement.
+    random_state : int | np.random.Generator | None, default None
+        Random seed or NumPy generator.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``(n_genes, n_components)`` with orthonormal columns.
+    """
+    rng = (
+        random_state
+        if isinstance(random_state, np.random.Generator)
+        else np.random.default_rng(random_state)
+    )
+    n_genes = X.shape[1]
+    l_dim = min(n_genes, n_components + n_oversamples)
+
+    Omega = rng.normal(size=(n_genes, l_dim)).astype(np.float64)
+    Y = np.asarray(matmul(X, Omega), dtype=np.float64)
+    if means is not None:
+        Y -= means @ Omega
+
+    for _ in range(n_power_iter):
+        Q, _ = np.linalg.qr(Y, mode="reduced")
+        Z_T = np.asarray(rmatmul(Q.T, X), dtype=np.float64)
+        if means is not None:
+            Z_T -= np.outer(np.sum(Q.T, axis=1), means)
+        Z = Z_T.T
+        Q_z, _ = np.linalg.qr(Z, mode="reduced")
+        Y = np.asarray(matmul(X, Q_z), dtype=np.float64)
+        if means is not None:
+            Y -= means @ Q_z
+
+    Q, _ = np.linalg.qr(Y, mode="reduced")
+    B = np.asarray(rmatmul(Q.T, X), dtype=np.float64)
+    if means is not None:
+        B -= np.outer(np.sum(Q.T, axis=1), means)
+
+    _, _, vh = np.linalg.svd(B, full_matrices=False)
+    return vh[:n_components, :].T.astype(np.float64)
+
+
+def extract_dataset_info(
+    X_in: anndata.AnnData,
+    normalize_slices: bool = False,
+) -> tuple[np.ndarray | csr_array, np.ndarray, np.ndarray, float, np.ndarray | None]:
+    """Extract matrix, condition indices, gene means, norm_sq, and optional slice weights.
+
+    Parameters
+    ----------
+    X_in : anndata.AnnData
+        Input single-cell AnnData dataset.
+    normalize_slices : bool, default False
+        Whether to calculate per-condition slice inverse-norm weights.
+
+    Returns
+    -------
+    tuple[np.ndarray | csr_array, np.ndarray, np.ndarray, float, np.ndarray | None]
+        The ``(X_mat, condition_unique_idxs, means, norm_tensor, slice_weights)`` tuple.
+    """
+    assert X_in.X is not None
+    X_mat = cast("np.ndarray | csr_array", X_in.X)
+    condition_unique_idxs = cast(
+        "np.ndarray", X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
+    )
+    n_cond = int(np.amax(condition_unique_idxs)) + 1
+
+    if "means" in X_in.var:
+        means = X_in.var["means"].to_numpy()
+    else:
+        means = np.zeros(X_mat.shape[1])
+
+    norm_tensor = calc_norm_sq(X_mat, means)
+
+    slice_weights: np.ndarray | None = None
+    if normalize_slices:
+        slice_norms = calc_slice_norms(X_mat, means, condition_unique_idxs, n_cond)
+        slice_weights = np.where(slice_norms > 1e-10, 1.0 / slice_norms, 1.0)
+
+    return X_mat, condition_unique_idxs, means, norm_tensor, slice_weights

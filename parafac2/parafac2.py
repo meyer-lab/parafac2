@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any
 
 import anndata
 import numpy as np
@@ -25,18 +25,15 @@ from .compress import (
     init_compressed_factors,
     project_data_compressed,
 )
-
-if TYPE_CHECKING:
-    from scipy.sparse import csr_array
-
 from .utils import (
     calc_err,
     calc_norm_sq,
-    calc_slice_norms,
     calc_W,
     condition_slices,
+    extract_dataset_info,
     parafac_update,
     project_data,
+    randomized_svd_right,
     solve_factors,
     standardize_pf2,
 )
@@ -74,10 +71,10 @@ def store_pf2(
         if X.adata is None:
             raise ValueError("CompressedData has no associated AnnData object.")
         target_adata = X.adata
-        sgIndex = X.condition_unique_idxs
+        condition_unique_idxs = X.condition_unique_idxs
     else:
         target_adata = X
-        sgIndex = target_adata.obs["condition_unique_idxs"]
+        condition_unique_idxs = target_adata.obs["condition_unique_idxs"]
 
     target_adata.uns["Pf2_weights"] = parafac2_output[0]
     target_adata.uns["Pf2_A"], target_adata.uns["Pf2_B"], target_adata.varm["Pf2_C"] = (
@@ -88,7 +85,7 @@ def store_pf2(
         (target_adata.shape[0], len(target_adata.uns["Pf2_weights"])), dtype=np.float32
     )
     for i, p in enumerate(parafac2_output[2]):
-        target_adata.obsm["projections"][sgIndex == i, :] = p
+        target_adata.obsm["projections"][condition_unique_idxs == i, :] = p
 
     target_adata.obsm["weighted_projections"] = (
         target_adata.obsm["projections"] @ target_adata.uns["Pf2_B"]
@@ -107,9 +104,7 @@ def parafac2_init(
     n_iter: int = 2,
     norm_tensor: float | None = None,
 ) -> tuple[list[np.ndarray], float]:
-    """
-    Compute initial factors using randomized SVD directly performed on
-    the single input matrix X without copying raw data.
+    """Compute initial factors using randomized SVD.
 
     Parameters
     ----------
@@ -134,7 +129,7 @@ def parafac2_init(
         Number of power iterations used to refine the random projection.
     norm_tensor : float | None, default None
         Precomputed squared Frobenius norm of the mean-centered ``X``. If
-        ``None``, it is computed via :func:`~parafac2.utils.calc_norm_sq` achievements.
+        ``None``, it is computed via :func:`~parafac2.utils.calc_norm_sq`.
 
     Returns
     -------
@@ -143,45 +138,18 @@ def parafac2_init(
         ``B`` the identity, and ``C`` the top right-singular vectors of the
         mean-centered ``X``), and the squared Frobenius norm ``norm_tensor``.
     """
-    rng = (
-        random_state
-        if isinstance(random_state, np.random.Generator)
-        else np.random.default_rng(random_state)
-    )
-
     n_cond = int(np.amax(condition_unique_idxs)) + 1
-    n_genes = X.shape[1]
     if norm_tensor is None:
         norm_tensor = calc_norm_sq(X, means)
 
-    l_dim = min(n_genes, rank + n_oversamples)
-
-    def centered_matmul(R: np.ndarray) -> np.ndarray:
-        """Compute ``(X - 1 mu^T) @ R`` without forming the mean-centered ``X``."""
-        Y = (X @ R).astype(np.float64)
-        return Y - (means @ R).astype(np.float64) if means is not None else Y
-
-    def centered_rmatmul(L: np.ndarray) -> np.ndarray:
-        """Compute ``L @ (X - 1 mu^T)`` without forming the mean-centered ``X``."""
-        Z_T = (L @ X).astype(np.float64)
-        if means is not None:
-            Z_T -= np.outer(np.sum(L, axis=1), means).astype(np.float64)
-        return Z_T
-
-    Omega = rng.normal(size=(n_genes, l_dim)).astype(np.float64)
-    Y = centered_matmul(Omega)
-
-    for _ in range(n_iter):
-        Q, _ = np.linalg.qr(Y, mode="reduced")
-        Z = centered_rmatmul(Q.T).T
-        Q_z, _ = np.linalg.qr(Z, mode="reduced")
-        Y = centered_matmul(Q_z)
-
-    Q, _ = np.linalg.qr(Y, mode="reduced")
-    B = centered_rmatmul(Q.T)
-
-    _, _, vh = np.linalg.svd(B, full_matrices=False)
-    C = vh[:rank, :].T.astype(np.float64)
+    C = randomized_svd_right(
+        X,
+        means,
+        n_components=rank,
+        n_oversamples=n_oversamples,
+        n_power_iter=n_iter,
+        random_state=random_state,
+    )
 
     factors = [
         np.ones((n_cond, rank), dtype=np.float64),
@@ -304,7 +272,8 @@ def parafac2_nd(
     Parameters
     ----------
     X_in : anndata.AnnData | CompressedData
-        Input dataset with the (optionally sparse) data matrix in ``X_in.X``,\n        condition labels in ``X_in.obs["condition_unique_idxs"]``, and
+        Input dataset with the (optionally sparse) data matrix in ``X_in.X``,
+        condition labels in ``X_in.obs["condition_unique_idxs"]``, and
         optionally per-gene means in ``X_in.var["means"]`` (defaults to zero,
         i.e. no centering, if absent). Alternatively, a pre-compressed
         :class:`~parafac2.compress.CompressedData` object.
@@ -390,35 +359,28 @@ def parafac2_nd(
             verbose=verbose,
         )
 
-    assert X_in.X is not None
-    X_mat = cast("np.ndarray | csr_array", X_in.X)
-    sgIndex = cast("np.ndarray", X_in.obs["condition_unique_idxs"].to_numpy(dtype=int))
-
-    if "means" in X_in.var:
-        means = X_in.var["means"].to_numpy()
-    else:
-        means = np.zeros(X_in.shape[1])
-
-    norm_tensor = calc_norm_sq(X_mat, means)
-
-    slice_weights: np.ndarray | None = None
-    if normalize_slices:
-        n_cond = int(np.amax(sgIndex)) + 1
-        slice_norms = calc_slice_norms(X_mat, means, sgIndex, n_cond)
-        slice_weights = np.where(slice_norms > 1e-10, 1.0 / slice_norms, 1.0)
+    (
+        X_mat,
+        condition_unique_idxs,
+        means,
+        norm_tensor,
+        slice_weights,
+    ) = extract_dataset_info(X_in, normalize_slices=normalize_slices)
 
     X_raw = to_gpu(X_mat, backend=backend)
 
     factors, _ = parafac2_init(
         X_raw,
-        sgIndex,
+        condition_unique_idxs,
         rank=rank,
         means=means,
         random_state=random_state,
         norm_tensor=norm_tensor,
     )
 
-    cond_slices = condition_slices(sgIndex, int(np.amax(sgIndex)) + 1)
+    cond_slices = condition_slices(
+        condition_unique_idxs, int(np.amax(condition_unique_idxs)) + 1
+    )
 
     # W depends only on C, so it stays valid across the A and B updates and is
     # recomputed only once C changes. Each sweep therefore costs exactly two
