@@ -14,6 +14,7 @@ from scipy.sparse import csr_array, issparse
 
 _MLX_CSR_SPMM_KERNEL = None
 _MLX_CSR_ATOMIC_RSPMM_KERNEL = None
+_MKL_DOT: Any = False
 
 _MLX_METAL_HEADER = """
 #include <metal_stdlib>
@@ -520,6 +521,99 @@ class GPUMatrix:
     def __rmatmul__(self, lhs: np.ndarray) -> np.ndarray:
         """Operator form of :meth:`rmatmul`, enabling ``lhs @ gpu_matrix``."""
         return self.rmatmul(lhs)
+
+
+def _get_mkl_dot() -> Any:
+    """Return ``sparse_dot_mkl.dot_product_mkl`` if importable, else ``None``.
+
+    SciPy's sparse-times-dense kernels are single-threaded, which dominates
+    the PARAFAC2 fit on large datasets. When the optional ``sparse-dot-mkl``
+    package is installed (``pip install 'parafac2[mkl]'``) its multithreaded
+    MKL kernels are used instead. The lookup is cached in the module-level
+    ``_MKL_DOT`` global.
+    """
+    global _MKL_DOT
+    if _MKL_DOT is False:
+        try:
+            from sparse_dot_mkl import (  # ty: ignore[unresolved-import]
+                dot_product_mkl,
+            )
+
+            _MKL_DOT = dot_product_mkl
+        except ImportError:
+            _MKL_DOT = None
+    return _MKL_DOT
+
+
+def _mkl_compatible(mat: Any, dense: np.ndarray) -> bool:
+    """Whether ``mat``/``dense`` can be handed to MKL's sparse kernels.
+
+    MKL requires a CPU-resident CSR/CSC matrix and a dense operand that
+    shares its (single- or double-precision) dtype and is contiguous.
+    """
+    if not issparse(mat) or _get_mkl_dot() is None:
+        return False
+    return (
+        mat.dtype == dense.dtype
+        and mat.dtype in (np.float32, np.float64)
+        and dense.flags.c_contiguous
+    )
+
+
+def matmul(mat: Any, rhs: np.ndarray) -> np.ndarray:
+    """Compute ``mat @ rhs``, dispatching to the fastest available kernel.
+
+    Parameters
+    ----------
+    mat : Any
+        A :class:`GPUMatrix`, SciPy sparse matrix, or dense NumPy array.
+    rhs : np.ndarray
+        The dense right-hand operand.
+
+    Returns
+    -------
+    np.ndarray
+        The product ``mat @ rhs``.
+
+    Notes
+    -----
+    ``rhs`` should already share ``mat``'s dtype. Handing a float64 ``rhs``
+    to a float32 sparse ``mat`` makes SciPy upcast the *whole* sparse matrix,
+    which for single-cell-sized data is both slow and memory-hostile; see
+    :func:`~parafac2.utils.calc_W`.
+    """
+    if isinstance(mat, GPUMatrix):
+        return mat.matmul(rhs)
+    if _mkl_compatible(mat, rhs):
+        return _get_mkl_dot()(mat, rhs)
+    return mat @ rhs
+
+
+def rmatmul(lhs: np.ndarray, mat: Any) -> np.ndarray:
+    """Compute ``lhs @ mat``, dispatching to the fastest available kernel.
+
+    Parameters
+    ----------
+    lhs : np.ndarray
+        The dense left-hand operand.
+    mat : Any
+        A :class:`GPUMatrix`, SciPy sparse matrix, or dense NumPy array.
+
+    Returns
+    -------
+    np.ndarray
+        The product ``lhs @ mat``.
+    """
+    if isinstance(mat, GPUMatrix):
+        return mat.rmatmul(lhs)
+    if _mkl_compatible(mat, lhs):
+        return _get_mkl_dot()(lhs, mat)
+    return lhs @ mat
+
+
+def matrix_dtype(mat: Any) -> np.dtype:
+    """Return the dtype of a :class:`GPUMatrix`, sparse matrix, or ndarray."""
+    return np.dtype(getattr(mat, "dtype", np.float64))
 
 
 def to_gpu(

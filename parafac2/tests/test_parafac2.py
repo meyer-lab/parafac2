@@ -13,7 +13,47 @@ from tensorly.parafac2_tensor import parafac2_to_slices
 from tensorly.random import random_parafac2
 
 from ..parafac2 import parafac2_init, parafac2_nd
-from ..utils import calc_norm_sq, calc_slice_norms, project_data
+from ..utils import (
+    calc_err,
+    calc_norm_sq,
+    calc_slice_norms,
+    calc_W,
+    condition_slices,
+    parafac_update,
+    project_data,
+)
+
+
+def _project(X, cond_idxs, means, factors):
+    """Compute ``(projections, S)`` for the given data and factors."""
+    slices = condition_slices(cond_idxs, int(np.amax(cond_idxs)) + 1)
+    W = calc_W(X, means, factors[2])
+    return project_data(W, factors, slices)
+
+
+def _mttkrp(X, cond_idxs, means, factors, mode):
+    """Return the MTTKRP for ``mode``, recovered from a ``parafac_update`` solve."""
+    slices = condition_slices(cond_idxs, int(np.amax(cond_idxs)) + 1)
+    W = calc_W(X, means, factors[2])
+    projections, S = project_data(W, factors, slices)
+
+    rank = factors[1].shape[0]
+    v = np.ones((rank, rank))
+    for i, factor in enumerate(factors):
+        if i != mode:
+            v *= factor.T @ factor
+
+    updated = parafac_update(
+        [f.copy() for f in factors],
+        mode,
+        S,
+        projections,
+        X=X,
+        means=means,
+        cond_slices=slices,
+    )
+    # parafac_update solves `mttkrp @ inv(v) = factor`, so invert to recover it.
+    return updated[mode] @ v.T
 
 
 def pf2_to_anndata(X_list, sparse=False):
@@ -73,8 +113,8 @@ def test_init_reprod(sparse: bool):
 
     # Compare both seeds for each mode.
     for mode in range(3):
-        m1, _ = project_data(X_mat, cond_idxs, means, f1, 1.0, mode=mode)
-        m2, _ = project_data(X_mat, cond_idxs, means, f2, 1.0, mode=mode)
+        m1 = _mttkrp(X_mat, cond_idxs, means, f1, mode)
+        m2 = _mttkrp(X_mat, cond_idxs, means, f2, mode)
         np.testing.assert_allclose(m1, m2, rtol=1e-5, atol=1e-5)
 
 
@@ -219,16 +259,8 @@ def test_pf2_r2x():
     X_dense = np.concatenate(X, axis=0)
     cond_idxs = np.concatenate([[i] * s[0] for i, s in enumerate(pf2shape)])
 
-    _, errCMF = project_data(X_dense, cond_idxs, means, f, norm_tensor, mode=0)
-    p = project_data(
-        X_dense,
-        cond_idxs,
-        means,
-        f,
-        norm_tensor,
-        mode=0,
-        return_projections=True,
-    )
+    p, S = _project(X_dense, cond_idxs, means, f)
+    errCMF = calc_err(S, f, norm_tensor)
 
     err = _parafac2_reconstruction_error(X, (w, f, p)) ** 2
 
@@ -252,9 +284,9 @@ def test_pf2_proj_centering():
     X_dense = np.concatenate(X_pf, axis=0)
     cond_idxs = np.concatenate([[i] * s[0] for i, s in enumerate(shapes)])
 
-    projected_X, norm_sq_err = project_data(
-        X_dense, cond_idxs, means_zero, factors, norm_X_sq, mode=0
-    )
+    _, S = _project(X_dense, cond_idxs, means_zero, factors)
+    projected_X = _mttkrp(X_dense, cond_idxs, means_zero, factors, 0)
+    norm_sq_err = calc_err(S, factors, norm_X_sq)
 
     np.testing.assert_allclose(norm_sq_err / norm_X_sq, 0.0, atol=1e-6)
 
@@ -262,9 +294,9 @@ def test_pf2_proj_centering():
     means = np.random.randn(X_pf[0].shape[1])
     X_dense_mean = X_dense + means
 
-    projected_X_mean, norm_sq_err_centered = project_data(
-        X_dense_mean, cond_idxs, means, factors, norm_X_sq, mode=0
-    )
+    _, S_mean = _project(X_dense_mean, cond_idxs, means, factors)
+    projected_X_mean = _mttkrp(X_dense_mean, cond_idxs, means, factors, 0)
+    norm_sq_err_centered = calc_err(S_mean, factors, norm_X_sq)
 
     np.testing.assert_allclose(projected_X, projected_X_mean, rtol=1.0e-4, atol=1.0e-4)
     np.testing.assert_allclose(
@@ -348,23 +380,84 @@ def test_project_data_sparse_dense_with_means():
     norm_sq = calc_norm_sq(X_dense, means)
 
     for mode in range(3):
-        mtt_d, err_d = project_data(
-            X_dense, cond_idxs, means, factors, norm_sq, mode=mode
-        )
-        mtt_s, err_s = project_data(
-            X_sparse, cond_idxs, means, factors, norm_sq, mode=mode
-        )
+        mtt_d = _mttkrp(X_dense, cond_idxs, means, factors, mode)
+        mtt_s = _mttkrp(X_sparse, cond_idxs, means, factors, mode)
         np.testing.assert_allclose(mtt_d, mtt_s, rtol=1e-5, atol=1e-5)
-        np.testing.assert_allclose(err_d, err_s, rtol=1e-5, atol=1e-5)
 
-    proj_d = project_data(
-        X_dense, cond_idxs, means, factors, norm_sq, mode=0, return_projections=True
-    )
-    proj_s = project_data(
-        X_sparse, cond_idxs, means, factors, norm_sq, mode=0, return_projections=True
+    proj_d, S_d = _project(X_dense, cond_idxs, means, factors)
+    proj_s, S_s = _project(X_sparse, cond_idxs, means, factors)
+    np.testing.assert_allclose(
+        calc_err(S_d, factors, norm_sq), calc_err(S_s, factors, norm_sq), rtol=1e-5
     )
     for pd, ps in zip(proj_d, proj_s):
         np.testing.assert_allclose(pd, ps, rtol=1e-5, atol=1e-5)
+
+
+def test_condition_slices_grouped_and_shuffled():
+    """Grouped rows should give zero-copy slices; shuffled rows must still group."""
+    grouped = np.repeat(np.arange(4), 5)
+    sels = condition_slices(grouped, 4)
+    assert all(isinstance(s, slice) for s in sels)
+    for k, s in enumerate(sels):
+        np.testing.assert_array_equal(grouped[s], k)
+
+    rng = np.random.default_rng(0)
+    perm = rng.permutation(grouped.size)
+    shuffled = grouped[perm]
+    sels_s = condition_slices(shuffled, 4)
+    assert all(isinstance(s, np.ndarray) for s in sels_s)
+    for k, s in enumerate(sels_s):
+        np.testing.assert_array_equal(shuffled[s], np.full(5, k))
+
+
+def test_row_order_does_not_change_fit():
+    """Permuting rows must not change the fit, only where each row's P_k lands."""
+    shapes = [(20, 30) for _ in range(4)]
+    rank = 3
+    rng = np.random.default_rng(7)
+
+    X_list = [rng.normal(size=shape) for shape in shapes]
+    X_ann = pf2_to_anndata(X_list, sparse=False)
+
+    perm = rng.permutation(X_ann.shape[0])
+    X_shuf = X_ann[perm].copy()
+
+    (w_a, f_a, _), r2_a = parafac2_nd(X_ann, rank=rank, random_state=3, n_iter_max=25)
+    (w_b, f_b, _), r2_b = parafac2_nd(X_shuf, rank=rank, random_state=3, n_iter_max=25)
+
+    np.testing.assert_allclose(r2_a, r2_b, rtol=1e-8)
+    np.testing.assert_allclose(w_a, w_b, rtol=1e-6, atol=1e-6)
+    for fa, fb in zip(f_a, f_b, strict=True):
+        np.testing.assert_allclose(fa, fb, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize("n_inner", [1, 3])
+def test_n_inner_monotonic_and_consistent(n_inner: int):
+    """Extra inner (P, A, B) passes must stay monotone and reach the same optimum."""
+    shapes = [(25, 35) for _ in range(4)]
+    rank = 3
+    rng = np.random.default_rng(11)
+
+    X_list = [rng.normal(size=shape) for shape in shapes]
+    X_ann = pf2_to_anndata(X_list, sparse=False)
+
+    errors: list[float] = []
+    (_w, _f, p), r2x = parafac2_nd(
+        X_ann,
+        rank=rank,
+        random_state=11,
+        n_iter_max=60,
+        tol=1e-10,
+        n_inner=n_inner,
+        callback=lambda _i, e, _f: errors.append(e),
+    )
+
+    for i in range(1, len(errors)):
+        assert errors[i] - errors[i - 1] <= 1e-9, f"error rose at sweep {i}"
+
+    assert r2x > 0.0
+    for P_k in p:
+        np.testing.assert_allclose(P_k.T @ P_k, np.eye(rank), atol=1e-6)
 
 
 def test_calc_slice_norms():

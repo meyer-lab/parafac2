@@ -2,17 +2,32 @@
 Low-level numerical routines supporting the PARAFAC2 fit.
 
 Provides norm computation over (optionally mean-centered, optionally sparse)
-data, the per-mode ALS factor update, the per-condition projection and MTTKRP
-accumulation step, and post-fit standardization of the factors and
+data, the per-condition projection step, the per-mode ALS factor update
+(which forms its own MTTKRP), and post-fit standardization of the factors and
 projections.
+
+The fit touches the raw data through exactly two products, which together
+dominate runtime on single-cell-sized inputs:
+
+* ``W = (X - 1 mu^T) @ C`` (:func:`calc_W`), which depends only on ``C``.
+* ``X^T @ H`` for the mode-2 MTTKRP (inside :func:`parafac_update`).
+
+Everything else flows through the compressed per-condition slices
+``S_k = P_k^T W_k``, an ``(n_cond, rank, rank)`` array small enough to keep
+resident. In particular the mode-0 and mode-1 MTTKRPs and the reconstruction
+error are all functions of ``S`` alone, so the projections and both of those
+factor updates can be recomputed from a cached ``W`` without re-reading the
+data.
 """
 
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from scipy.sparse import issparse
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
+
+from .backend import matmul, matrix_dtype, rmatmul
 
 if TYPE_CHECKING:
     from scipy.sparse import csr_array
@@ -104,24 +119,200 @@ def calc_slice_norms(
     return np.sqrt(np.bincount(idxs, weights=row_sums_sq, minlength=n_cond))
 
 
+def condition_slices(
+    condition_unique_idxs: np.ndarray, n_cond: int
+) -> list[slice | np.ndarray]:
+    """Return a per-condition row selector for each condition.
+
+    Computing ``condition_unique_idxs == i`` inside the per-condition loop
+    costs ``O(n_cells)`` per condition, i.e. ``O(n_cells * n_cond)`` per pass
+    over the data, plus a fancy-indexed copy each time. Precomputing the
+    selectors once drops that to ``O(n_cells)``, and when the rows are
+    already grouped by condition (the usual case, since conditions are
+    concatenated) the selectors are plain ``slice`` objects, making
+    ``W[sel]`` a zero-copy view.
+
+    Parameters
+    ----------
+    condition_unique_idxs : np.ndarray
+        Integer array assigning each row to a condition in ``[0, n_cond)``.
+    n_cond : int
+        The total number of conditions.
+
+    Returns
+    -------
+    list[slice | np.ndarray]
+        One selector per condition: a ``slice`` when the condition's rows are
+        contiguous, otherwise an integer index array.
+    """
+    idxs = np.asarray(condition_unique_idxs)
+
+    if idxs.size and np.all(np.diff(idxs) >= 0):
+        starts = np.searchsorted(idxs, np.arange(n_cond), side="left")
+        stops = np.searchsorted(idxs, np.arange(n_cond), side="right")
+        return [slice(int(a), int(b)) for a, b in zip(starts, stops, strict=True)]
+
+    order = np.argsort(idxs, kind="stable")
+    bounds = np.searchsorted(idxs[order], np.arange(n_cond + 1))
+    return [order[bounds[k] : bounds[k + 1]] for k in range(n_cond)]
+
+
+def calc_W(X: Any, means: np.ndarray | None, C: np.ndarray) -> np.ndarray:
+    """Compute ``W = (X - 1 mu^T) @ C``, the first of the two raw-data products.
+
+    ``W`` depends only on ``C``, so it stays valid across the ``A`` and ``B``
+    updates and only has to be recomputed once ``C`` changes.
+
+    The product is taken in ``X``'s own dtype. That matters: handing a
+    float64 ``C`` to a float32 sparse ``X`` makes SciPy upcast the entire
+    sparse matrix, doubling both the memory traffic that dominates this step
+    and the peak memory. The result is widened to float64 afterwards, which
+    is ``O(n_cells * rank)`` and so negligible beside the product itself.
+
+    Parameters
+    ----------
+    X : Any
+        The (optionally sparse or GPU-backed) data matrix, stacked across all
+        conditions, with shape ``(total_cells, n_genes)``.
+    means : np.ndarray | None
+        Per-gene means to mean-center ``X`` by, or ``None`` to skip centering.
+    C : np.ndarray
+        The current gene factor matrix, shape ``(n_genes, rank)``.
+
+    Returns
+    -------
+    np.ndarray
+        The float64 array ``W`` of shape ``(total_cells, rank)``.
+    """
+    C_op = np.ascontiguousarray(C, dtype=matrix_dtype(X))
+    W = np.asarray(matmul(X, C_op), dtype=np.float64)
+    if means is not None:
+        W -= means @ C
+    return W
+
+
+def project_data(
+    W: np.ndarray,
+    factors: list[np.ndarray],
+    cond_slices: list[slice | np.ndarray],
+) -> tuple[list[np.ndarray], np.ndarray]:
+    """Compute each condition's projection matrix and compressed slice.
+
+    For condition ``k`` the projection ``P_k`` is the orthonormal polar
+    factor of ``W_k diag(a_k) B^T``, and the compressed slice is
+    ``S_k = P_k^T W_k``. Costs ``O(n_cells * rank^2)`` and touches no raw
+    data, so it is roughly two orders of magnitude cheaper than
+    :func:`calc_W` and can be repeated freely while ``W`` is cached.
+
+    Parameters
+    ----------
+    W : np.ndarray
+        The cached ``(X - 1 mu^T) @ C`` from :func:`calc_W`.
+    factors : list[np.ndarray]
+        The current ``[A, B, C]`` factor matrices.
+    cond_slices : list[slice | np.ndarray]
+        Per-condition row selectors from :func:`condition_slices`.
+
+    Returns
+    -------
+    tuple[list[np.ndarray], np.ndarray]
+        The per-condition projections ``P_k`` (each ``(n_k, rank)`` with
+        orthonormal columns), and the stacked compressed slices ``S`` with
+        shape ``(n_cond, rank, rank)``.
+    """
+    A, B = factors[0], factors[1]
+    rank = B.shape[0]
+
+    projections: list[np.ndarray] = []
+    S = np.empty((len(cond_slices), rank, rank))
+
+    for i, sel in enumerate(cond_slices):
+        W_i = W[sel]
+        M = W_i @ (B * A[i]).T  # (n_k, rank)
+        G = M.T @ M  # (rank, rank)
+        _, V = np.linalg.eigh(G)
+        MV = M @ V  # ≈ U @ S @ D, orthogonal columns
+        col_norms = np.linalg.norm(MV, axis=0, keepdims=True)
+        safe_norms = np.where(col_norms > 1e-10, col_norms, 1.0)
+        proj = (MV / safe_norms) @ V.T  # D cancels -> U @ Vh
+        projections.append(proj)
+        S[i] = proj.T @ W_i
+
+    return projections, S
+
+
+def calc_err(S: np.ndarray, factors: list[np.ndarray], norm_X_sq: float) -> float:
+    """Return the squared reconstruction error from the compressed slices.
+
+    Uses the expansion ``||X||^2 + Tr(A^T A * B^T B * C^T C) - 2 <A, diag(B^T
+    S_k)>``, so no raw-data pass is needed and the error is free to evaluate
+    as often as desired (e.g. to monitor an inner iteration).
+
+    Parameters
+    ----------
+    S : np.ndarray
+        The stacked compressed slices from :func:`project_data`.
+    factors : list[np.ndarray]
+        The current ``[A, B, C]`` factor matrices.
+    norm_X_sq : float
+        The squared Frobenius norm of the mean-centered ``X``, as returned by
+        :func:`calc_norm_sq`.
+
+    Returns
+    -------
+    float
+        The squared reconstruction error.
+    """
+    A, B, C = factors
+    norm_sq_err = norm_X_sq + float(((A.T @ A) * (B.T @ B) * (C.T @ C)).sum())
+    norm_sq_err -= 2.0 * float(np.sum(A * np.einsum("kqr,qr->kr", S, B)))
+    return norm_sq_err
+
+
 def parafac_update(
     factors: list[np.ndarray],
-    mttkrp: np.ndarray,
     mode: int,
+    S: np.ndarray,
+    projections: list[np.ndarray] | None = None,
+    *,
+    X: Any = None,
+    means: np.ndarray | None = None,
+    cond_slices: list[slice | np.ndarray] | None = None,
+    slice_weights: np.ndarray | None = None,
 ) -> list[np.ndarray]:
     """
-    Perform PARAFAC update for the requested mode using pre-computed MTTKRP.
+    Form the MTTKRP for the requested mode and update that factor.
+
+    Modes 0 and 1 are built from the compressed slices ``S`` alone and cost
+    ``O(n_cond * rank^2)``. Mode 2 is the only update that has to revisit the
+    raw data, via ``X^T @ H`` with ``H_k = P_k B diag(a_k)``.
+
+    ``slice_weights``, if given, is a per-condition scalar (e.g. an inverse
+    Frobenius norm) applied only to the MTTKRP contributions. This rebalances
+    how much each slice contributes to the factor updates without touching or
+    copying ``X``, and without affecting the reported error (which
+    :func:`calc_err` computes from the unweighted ``S``).
 
     Parameters
     ----------
     factors : list[np.ndarray]
         The current ``[A, B, C]`` factor matrices; ``factors[mode]`` is
-        replaced in place with the updated matrix.
-    mttkrp : np.ndarray
-        The matricized-tensor-times-Khatri-Rao-product for ``mode``, as
-        returned by :func:`project_data`.
+        replaced with the updated matrix.
     mode : int
         Which factor to update (index into ``factors``).
+    S : np.ndarray
+        The stacked compressed slices from :func:`project_data`.
+    projections : list[np.ndarray] | None, default None
+        The per-condition projections. Required for ``mode=2`` only.
+    X : Any, keyword-only, default None
+        The raw data matrix. Required for ``mode=2`` only.
+    means : np.ndarray | None, keyword-only, default None
+        Per-gene means to mean-center ``X`` by. Used for ``mode=2`` only.
+    cond_slices : list[slice | np.ndarray] | None, keyword-only, default None
+        Per-condition row selectors from :func:`condition_slices`. Required
+        for ``mode=2`` only.
+    slice_weights : np.ndarray | None, keyword-only, default None
+        Optional per-condition scalar weights, as described above.
 
     Returns
     -------
@@ -130,8 +321,39 @@ def parafac_update(
         equations ``factors[mode] @ v = mttkrp`` for the Gram-matrix product
         ``v`` of the other factors (falling back to a least-squares solve if
         ``v`` is singular).
+
+    Raises
+    ------
+    ValueError
+        If ``mode=2`` is requested without ``projections``, ``X``, or
+        ``cond_slices``.
     """
-    rank = factors[0].shape[1]
+    A, B, _C = factors
+    rank = B.shape[0]
+
+    if mode == 0:
+        mttkrp = np.einsum("kqr,qr->kr", S, B)
+        if slice_weights is not None:
+            mttkrp = mttkrp * slice_weights[:, np.newaxis]
+    elif mode == 1:
+        A_w = A if slice_weights is None else A * slice_weights[:, np.newaxis]
+        mttkrp = np.einsum("kqr,kr->qr", S, A_w)
+    else:
+        if projections is None or X is None or cond_slices is None:
+            raise ValueError(
+                "mode=2 needs `projections`, `X`, and `cond_slices` to form its MTTKRP."
+            )
+        # Build H^T directly so the dense operand of the X^T @ H product is
+        # C-contiguous and shares X's dtype (see calc_W on why that matters).
+        H_T = np.empty((rank, X.shape[0]), dtype=matrix_dtype(X))
+        for k, sel in enumerate(cond_slices):
+            w_k = 1.0 if slice_weights is None else slice_weights[k]
+            H_T[:, sel] = (projections[k] @ (B * A[k]) * w_k).T
+
+        mttkrp_T = np.asarray(rmatmul(H_T, X), dtype=np.float64)
+        if means is not None:
+            mttkrp_T -= np.outer(H_T.sum(axis=1), means)
+        mttkrp = mttkrp_T.T
 
     # Compute Gram matrix product using current factors
     v = np.ones((rank, rank))
@@ -145,147 +367,6 @@ def parafac_update(
         factors[mode] = np.linalg.lstsq(v.T, mttkrp.T, rcond=None)[0].T
 
     return factors
-
-
-@overload
-def project_data(
-    X: Any,
-    condition_unique_idxs: np.ndarray,
-    means: np.ndarray | None,
-    factors: list[np.ndarray],
-    norm_X_sq: float,
-    mode: int,
-    return_projections: Literal[False] = False,
-    slice_weights: np.ndarray | None = None,
-) -> tuple[np.ndarray, float]: ...
-
-
-@overload
-def project_data(
-    X: Any,
-    condition_unique_idxs: np.ndarray,
-    means: np.ndarray | None,
-    factors: list[np.ndarray],
-    norm_X_sq: float,
-    mode: int,
-    return_projections: Literal[True],
-    slice_weights: np.ndarray | None = None,
-) -> list[np.ndarray]: ...
-
-
-def project_data(
-    X: Any,
-    condition_unique_idxs: np.ndarray,
-    means: np.ndarray | None,
-    factors: list[np.ndarray],
-    norm_X_sq: float,
-    mode: int,
-    return_projections: bool = False,
-    slice_weights: np.ndarray | None = None,
-) -> tuple[np.ndarray, float] | list[np.ndarray]:
-    """
-    Project each condition's data onto the current factors and accumulate the
-    MTTKRP for the requested mode.
-
-    ``slice_weights``, if given, is a per-condition scalar (e.g. an inverse
-    Frobenius norm) applied only to the small per-condition intermediates
-    that feed the MTTKRP accumulation. This rebalances how much each slice
-    contributes to the factor updates without touching or copying ``X``, and
-    without affecting the reported error (which is still computed from the
-    unweighted contributions).
-
-    Parameters
-    ----------
-    X : Any
-        The (optionally sparse or GPU-backed) data matrix, stacked across
-        all conditions, with shape ``(total_cells, n_genes)``.
-    condition_unique_idxs : np.ndarray
-        Integer array of length ``total_cells`` giving each row's condition
-        index.
-    means : np.ndarray | None
-        Per-gene means to mean-center ``X`` by, or ``None`` to skip
-        centering.
-    factors : list[np.ndarray]
-        The current ``[A, B, C]`` factor matrices.
-    norm_X_sq : float
-        The squared Frobenius norm of the mean-centered ``X`` (as returned
-        by :func:`calc_norm_sq`), used to compute the reconstruction error.
-    mode : int
-        Which factor's MTTKRP to accumulate (0, 1, or 2), ignored when
-        ``return_projections`` is True.
-    return_projections : bool, default False
-        If True, skip the MTTKRP/error accumulation and instead return the
-        list of per-condition projection matrices ``P_k``.
-    slice_weights : np.ndarray | None, default None
-        Optional per-condition scalar weights applied to the MTTKRP
-        contributions, as described above.
-
-    Returns
-    -------
-    tuple[np.ndarray, float] | list[np.ndarray]
-        If ``return_projections`` is False, the ``(mttkrp, norm_sq_err)``
-        pair for the requested ``mode``. If True, the list of per-condition
-        projection matrices ``P_k`` (each with orthonormal columns).
-    """
-    A, B, C = factors
-    rank = B.shape[0]
-    n_cond = A.shape[0]
-
-    # Initialize error with full tensor contraction ||X||^2 + Tr(A^T A * B^T B * C^T C)
-    norm_sq_err = norm_X_sq + float(((A.T @ A) * (B.T @ B) * (C.T @ C)).sum())
-
-    # Single GEMM for W = (X - 1 mu^T) @ C = X @ C - 1 (mu @ C)
-    W = X @ C
-    if means is not None:
-        W = W - (means @ C)
-
-    if mode == 0:
-        mttkrp = np.zeros((n_cond, rank))
-    elif mode == 1:
-        mttkrp = np.zeros((rank, rank))
-    else:
-        H = np.empty((X.shape[0], rank), dtype=np.float64)
-
-    proj_list = []
-    for i in range(n_cond):
-        cond_i = condition_unique_idxs == i
-        W_i = W[cond_i]
-        T_i = (B * A[i]).T  # (rank, rank)
-        M = W_i @ T_i
-        G = M.T @ M  # (rank, rank)
-        _, V = np.linalg.eigh(G)
-        MV = M @ V  # ≈ U @ S @ D, orthogonal columns
-        col_norms = np.linalg.norm(MV, axis=0, keepdims=True)
-        safe_norms = np.where(col_norms > 1e-10, col_norms, 1.0)
-        proj = (MV / safe_norms) @ V.T  # D cancels -> U @ Vh
-        proj_list.append(proj)
-
-        if return_projections:
-            continue
-
-        psc = proj.T @ W_i  # (rank, rank) dense product
-        m_i = np.sum(psc * B, axis=0)
-        norm_sq_err -= 2.0 * float(np.dot(A[i], m_i))
-
-        w_i = 1.0 if slice_weights is None else slice_weights[i]
-
-        if mode == 0:
-            mttkrp[i] = m_i * w_i
-        elif mode == 1:
-            mttkrp += psc * A[i] * w_i
-        else:
-            # Mode 2 updates C
-            H[cond_i] = proj @ (B * A[i]) * w_i
-
-    if return_projections:
-        return proj_list
-
-    if mode == 2:
-        mttkrp = (H.T @ X).T
-        if means is not None:
-            mttkrp -= np.outer(means, np.sum(H, axis=0))
-
-    return mttkrp, float(norm_sq_err)
 
 
 def standardize_pf2(
