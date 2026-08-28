@@ -24,11 +24,11 @@ jobs:
       with:
         enable-cache: true
     - name: Build documentation
-      run: uv run --group docs sphinx-build -b html docs docs/_build/html -W --keep-going
+      run: uv run --group docs mkdocs build --strict
     - name: Upload artifact
       uses: actions/upload-pages-artifact@v3
       with:
-        path: docs/_build/html
+        path: site
 
   deploy:
     needs: build
