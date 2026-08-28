@@ -31,10 +31,9 @@ dev = [
     "ty>=0.0.50",
 ]
 docs = [
-    "sphinx>=8.1",
-    "furo>=2024.8.6",
-    "myst-parser>=4.0",
-    "sphinx-autodoc-typehints>=2.5",
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.28",
 ]
 
 [build-system]
