@@ -10,7 +10,9 @@ CANDELINC compression dramatically accelerates fitting by projecting the gene an
 
 PARAFAC2 decomposes multi-condition single-cell data by modeling slice $k$ ($N_k$ cells by $J$ genes) as:
 
-$$X_k \approx P_k B \operatorname{diag}(A_{k,:}) C^T$$
+$$
+X_k \approx P_k B \operatorname{diag}(A_{k,:}) C^T
+$$
 
 where $P_k \in \mathbb{R}^{N_k \times R}$ has orthonormal columns ($P_k^T P_k = I_R$), $B \in \mathbb{R}^{R \times R}$, $A \in \mathbb{R}^{K \times R}$, and $C \in \mathbb{R}^{J \times R}$.
 
@@ -92,8 +94,12 @@ The simplest way to use compression is passing the `compress` argument directly 
 
 When `compress="auto"` (or `compress=True`), `parafac2_nd` automatically sets the subspace dimensions based on the target `rank`:
 
-$$L_g = \min(n_{\text{genes}}, \max(4 \cdot \text{rank}, \text{rank} + 20))$$
-$$L_c = \max(4 \cdot \text{rank}, \text{rank} + 20)$$
+$$
+\begin{aligned}
+L_g &= \min(n_{\text{genes}}, \max(4 \cdot \text{rank}, \text{rank} + 20)) \\
+L_c &= \max(4 \cdot \text{rank}, \text{rank} + 20)
+\end{aligned}
+$$
 
 ```python
 # One-step factorization with automatic compression
@@ -146,7 +152,9 @@ compressed = compress_dataset(adata, L="auto", rank=30, random_state=42)
 # Inspect compression metadata
 print(f"Gene dimension (L_g): {compressed.L_g}")
 print(f"Max cell dimension (L_c): {compressed.max_cell_dim}")
-print(f"Discarded variance fraction: {compressed.lost_var / compressed.norm_tensor:.4%}")
+print(
+    f"Discarded variance fraction: {compressed.lost_var / compressed.norm_tensor:.4%}"
+)
 
 # 2. Rapidly sweep across multiple ranks
 rank_results = {}
@@ -290,7 +298,9 @@ from parafac2.normalize import prepare_dataset
 # Synthetic demo data:
 rng = np.random.default_rng(0)
 n_cells, n_genes, n_conds = 3000, 1000, 6
-mat = (rng.random((n_cells, n_genes)) < 0.05).astype(np.float32) * rng.exponential(1.0, size=(n_cells, n_genes)).astype(np.float32)
+mat = (rng.random((n_cells, n_genes)) < 0.05).astype(np.float32) * rng.exponential(
+    1.0, size=(n_cells, n_genes)
+).astype(np.float32)
 obs = {"condition_unique_idxs": np.repeat(np.arange(n_conds), n_cells // n_conds)}
 var = {"means": np.ravel(mat.mean(axis=0))}
 adata = anndata.AnnData(X=csr_array(mat), obs=obs, var=var)

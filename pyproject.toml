@@ -19,6 +19,9 @@ gpu = [
     "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "cupy-cuda12x[ctk]; sys_platform != 'darwin'",
 ]
+# SciPy's sparse @ dense kernels are single-threaded, and those products
+# dominate the fit. Installing this swaps in multithreaded MKL equivalents.
+mkl = ["sparse-dot-mkl>=0.9; platform_machine == 'x86_64'"]
 
 [dependency-groups]
 dev = [
