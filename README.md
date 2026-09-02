@@ -7,14 +7,14 @@ Full package documentation is available at [meyer-lab.github.io/parafac2](https:
 ## Installation
 To install `parafac2` with standard CPU support:
 ```bash
-pip install git+https://github.com/meyer-lab/parafac2.git@main
+pip install parafac2
 ```
 
 ### Hardware Acceleration (`[gpu]` extra)
 `parafac2` supports hardware acceleration (`mlx` on Apple Silicon and `cupy` on Linux/Windows) via a single `gpu` extra:
 
 ```bash
-pip install "parafac2[gpu] @ git+https://github.com/meyer-lab/parafac2.git@main"
+pip install "parafac2[gpu]"
 ```
 
 Or with `uv`:
