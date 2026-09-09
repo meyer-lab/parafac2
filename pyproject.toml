@@ -52,6 +52,12 @@ docs = [
     "mkdocstrings[python]>=0.28",
 ]
 
+[tool.ty.rules]
+# mlx/cupy imports are guarded per-platform (see the `gpu` extra above), so
+# these `ty: ignore[unresolved-import]` comments are only unused on whichever
+# platform actually has the package installed.
+unused-ignore-comment = "ignore"
+
 [build-system]
 requires = ["uv_build>=0.12.0,<0.13"]
 build-backend = "uv_build"
