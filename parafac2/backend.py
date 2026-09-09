@@ -249,7 +249,7 @@ def _to_mlx_matrix(mat: np.ndarray | csr_array) -> Any:
 
     if issparse(mat):
         return _csr_to_mlx(cast("csr_array", mat))
-    return mx.array(mat)
+    return mx.array(cast("np.ndarray", mat))
 
 
 def _matmul_mlx(
