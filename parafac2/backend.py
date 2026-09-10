@@ -13,21 +13,16 @@ from typing import Any, cast
 import numpy as np
 from scipy.sparse import csr_array, issparse
 
-#: Environment variable that forces a backend, overriding auto-detection.
-#: An explicit ``backend=`` argument still takes precedence over it.
+# Environment variable that forces a backend, overriding auto-detection.
 BACKEND_ENV_VAR = "PARAFAC2_BACKEND"
 
 _VALID_BACKENDS = ("mlx", "cupy", "cpu")
 
-#: Fraction of *free* device memory a single transfer may claim before the
-#: CuPy backend switches to managed memory. The remainder has to hold the fit's
-#: dense operands and temporaries, which are small beside the data matrix but
-#: not free.
+# Fraction of free device memory a single transfer may claim before the
+# CuPy backend switches to managed memory.
 DEVICE_MEMORY_HEADROOM = 0.8
 
-#: Set once the managed-memory allocator has been installed. CuPy's allocator
-#: is process-global, so this is deliberately module state rather than
-#: per-matrix: installing it twice would discard the first pool.
+# Set once the managed-memory allocator has been installed.
 _managed_allocator_installed = False
 
 _MLX_CSR_SPMM_KERNEL = None
@@ -41,33 +36,17 @@ using namespace metal;
 
 
 def _cuda_is_usable() -> bool:
-    """Whether CuPy is installed *and* a CUDA device is actually present.
-
-    Importing ``cupy`` succeeds on any machine where the package is installed,
-    including one with no GPU, a driver/runtime mismatch, or
-    ``CUDA_VISIBLE_DEVICES=""``. Selecting the CuPy backend on that basis alone
-    defers the failure to the first allocation, which is both later and much
-    harder to attribute.
-    """
+    """Whether CuPy is installed and a CUDA device is actually present."""
     try:
         import cupy  # ty: ignore[unresolved-import]
 
         return cupy.cuda.runtime.getDeviceCount() > 0
     except Exception:  # noqa: BLE001
-        # Deliberately broad: a missing package raises ImportError, a
-        # driver/runtime mismatch raises CUDARuntimeError, and a broken install
-        # can raise almost anything. In every case the CuPy path is unusable
-        # and the caller should fall through to the next backend.
         return False
 
 
 def get_backend(backend: str | None = None) -> str:
     """Return the requested backend, or auto-detect the first available one.
-
-    Resolution order: an explicit ``backend`` argument, then the
-    ``PARAFAC2_BACKEND`` environment variable, then auto-detection.
-    Auto-detection prefers CuPy when a CUDA device is genuinely available, then
-    MLX, and otherwise falls back to ``'cpu'``.
 
     Parameters
     ----------
@@ -79,18 +58,6 @@ def get_backend(backend: str | None = None) -> str:
     -------
     str
         The resolved backend name: ``'mlx'``, ``'cupy'``, or ``'cpu'``.
-
-    Raises
-    ------
-    ValueError
-        If ``backend`` -- or ``PARAFAC2_BACKEND`` -- is not a supported name.
-
-    Notes
-    -----
-    Setting ``PARAFAC2_BACKEND=cpu`` is the supported way to force the CPU
-    path without editing call sites. It is the only route on a machine where
-    CuPy imports but the data does not fit on the device, since
-    ``CUDA_VISIBLE_DEVICES=""`` does not prevent the import.
     """
     if backend is None:
         backend = os.environ.get(BACKEND_ENV_VAR) or None
@@ -420,16 +387,7 @@ def _rmatmul_mlx(
 
 
 def device_bytes(mat: np.ndarray | csr_array) -> int:
-    """Bytes ``mat`` will occupy on a CuPy device.
-
-    For sparse input this is not simply the host arrays' size. ``cupyx``
-    stores ``indices`` and ``indptr`` in a *single shared* index dtype, chosen
-    as int64 whenever either the shape or the nonzero count exceeds int32
-    range. A matrix with more than 2**31 nonzeros therefore pays 8 bytes per
-    column index even though the indices themselves would fit in 4 -- which is
-    what makes a cohort-scale matrix so much larger on the device than in host
-    memory.
-    """
+    """Bytes ``mat`` will occupy on a CuPy device."""
     if not issparse(mat):
         return int(cast("np.ndarray", mat).nbytes)
 
@@ -455,23 +413,6 @@ def _managed_memory_supported() -> bool:
 
 def _ensure_device_capacity(nbytes: int, what: str = "matrix") -> bool:
     """Install the managed-memory allocator if ``nbytes`` will not fit.
-
-    CuPy's default pool allocates strictly within device memory, so a transfer
-    larger than what is free dies with ``OutOfMemoryError`` partway through --
-    typically on the index array, after the values have already been uploaded.
-    Because the size is known before any allocation happens, that is avoidable
-    with arithmetic rather than a retry: when the transfer does not fit, switch
-    to managed (unified) memory, which pages between host and device instead of
-    failing.
-
-    Managed memory is slower than a resident copy -- it is bound by PCIe demand
-    paging -- so it is only installed when it is needed. It is worth the cost
-    because the compressed path touches raw data once, not once per iteration.
-
-    Returns
-    -------
-    bool
-        Whether the managed allocator is in effect.
 
     Raises
     ------
