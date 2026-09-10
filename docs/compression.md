@@ -264,7 +264,7 @@ compressed = compress_dataset(
 pf2_output, r2x = parafac2_nd(compressed, rank=20, random_state=42)
 ```
 
-Auto-detection selects CuPy only when a CUDA device is genuinely present. Having the package installed is not enough — a machine with `cupy` but no usable GPU (no card, a driver/runtime mismatch, or `CUDA_VISIBLE_DEVICES=""`) falls back to CPU rather than failing at the first allocation.
+Auto-detection selects CuPy only when a CUDA device is genuinely present. This means that a machine with `cupy` but no usable GPU (no card, a driver/runtime mismatch, or `CUDA_VISIBLE_DEVICES=""`) falls back to CPU rather than failing at the first allocation.
 
 ### Forcing a backend without editing call sites
 
@@ -274,18 +274,7 @@ Set `PARAFAC2_BACKEND` to `cpu`, `cupy`, or `mlx`:
 PARAFAC2_BACKEND=cpu python fit.py
 ```
 
-An explicit `backend=` argument still takes precedence. The environment variable exists because `CUDA_VISIBLE_DEVICES=""` does *not* force the CPU path — it does not prevent `import cupy` — and because a wrapper that does not expose `backend=` otherwise leaves no route at all.
-
-### Datasets larger than device memory
-
-A matrix that does not fit on the card is **paged rather than refused**. Before transferring, `parafac2` compares the matrix's device footprint against free device memory and, when it will not fit, switches CuPy to its managed (unified) memory allocator so the data pages between host and device.
-
-Two things are worth knowing:
-
-- **The device footprint is larger than the host arrays.** `cupyx` stores `indices` and `indptr` in a single shared index dtype and widens both to int64 once either the shape or the nonzero count exceeds int32 range. A matrix with more than 2³¹ nonzeros therefore pays 8 bytes per column index even though the indices themselves would fit in 4. A 3.6e9-nonzero cohort is ~14.5 GB of float32 values plus ~29.1 GB of indices.
-- **Managed memory is slower** — it is bound by PCIe demand paging, on the order of a few GB/s — so it is only used when needed. It costs little in the compressed workflow, where the raw matrix is touched once rather than once per ALS iteration.
-
-If the matrix does not fit and the device cannot oversubscribe its memory, `parafac2` raises a `MemoryError` naming the sizes involved and pointing at `PARAFAC2_BACKEND=cpu`.
+An explicit `backend=` argument still takes precedence; however, the environment variable exists because `CUDA_VISIBLE_DEVICES=""` does not force the CPU path and because a wrapper that does not expose `backend=` otherwise leaves no route at all.
 
 ---
 
@@ -293,13 +282,9 @@ If the matrix does not fit and the device cannot oversubscribe its memory, `para
 
 These are properties of the method, not implementation details, and downstream code can rely on them.
 
-**R²X is reported against the original data, not the core.** `CompressedData` carries `norm_tensor` (the full squared Frobenius norm of the mean-centered input) and `lost_var` (the part the projection discarded), and the fit measures its error against `norm_tensor`. An R²X from a compressed fit is therefore directly comparable to one from an uncompressed fit — no correction is needed, and none should be applied.
-
-**Compression is valid only up to the rank the bases were sized for.** Both `L_g` and each `L_c` must be at least the rank being fit; `compress_dataset(rank=R)` sizes them accordingly. Fitting a compressed object at a rank above that is rejected rather than silently truncated.
+**R²X is reported against the original data, not the core.** `CompressedData` carries `norm_tensor` (the full squared Frobenius norm of the mean-centered input) and `lost_var` (the part the projection discarded), and the fit measures its error against `norm_tensor`. An R²X from a compressed fit is therefore directly comparable to one from an uncompressed fit.
 
 **Within-mode component geometry is preserved.** The bases are orthonormal, so cosines between components computed in the core's space equal those computed after decompression. A degeneracy or collinearity screen may therefore be run on the core.
-
-**Pseudoinverse-based diagnostics are unchanged.** Because `pinv(U F) = pinv(F) Uᵀ` for orthonormal `U`, a core-consistency diagnostic (CORCONDIA) computed from the compressed core equals the one computed from the full tensor — measured to ~2e-15 relative on a real single-cell cohort. This is what makes it correct to run a rank sweep's diagnostics on the core rather than reconstructing.
 
 **Factors and projections decompress exactly.** `C = Q @ C_L` and `P_k = Q_k @ P̃_k` are returned in the original coordinate system, with no loss beyond the initial subspace truncation.
 
