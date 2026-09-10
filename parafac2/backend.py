@@ -19,6 +19,17 @@ BACKEND_ENV_VAR = "PARAFAC2_BACKEND"
 
 _VALID_BACKENDS = ("mlx", "cupy", "cpu")
 
+#: Fraction of *free* device memory a single transfer may claim before the
+#: CuPy backend switches to managed memory. The remainder has to hold the fit's
+#: dense operands and temporaries, which are small beside the data matrix but
+#: not free.
+DEVICE_MEMORY_HEADROOM = 0.8
+
+#: Set once the managed-memory allocator has been installed. CuPy's allocator
+#: is process-global, so this is deliberately module state rather than
+#: per-matrix: installing it twice would discard the first pool.
+_managed_allocator_installed = False
+
 _MLX_CSR_SPMM_KERNEL = None
 _MLX_CSR_ATOMIC_RSPMM_KERNEL = None
 _MKL_DOT: Any = False
@@ -408,8 +419,95 @@ def _rmatmul_mlx(
         return _mlx_to_numpy(mx_res, orig_dtype, lhs.ndim == 1)
 
 
+def device_bytes(mat: np.ndarray | csr_array) -> int:
+    """Bytes ``mat`` will occupy on a CuPy device.
+
+    For sparse input this is not simply the host arrays' size. ``cupyx``
+    stores ``indices`` and ``indptr`` in a *single shared* index dtype, chosen
+    as int64 whenever either the shape or the nonzero count exceeds int32
+    range. A matrix with more than 2**31 nonzeros therefore pays 8 bytes per
+    column index even though the indices themselves would fit in 4 -- which is
+    what makes a cohort-scale matrix so much larger on the device than in host
+    memory.
+    """
+    if not issparse(mat):
+        return int(cast("np.ndarray", mat).nbytes)
+
+    mat_csr = cast("csr_array", mat)
+    nnz = int(mat_csr.data.size)
+    int32_max = np.iinfo(np.int32).max
+    idx_size = 8 if (max(mat_csr.shape) > int32_max or nnz > int32_max) else 4
+    return int(mat_csr.data.nbytes + (nnz + mat_csr.shape[0] + 1) * idx_size)
+
+
+def _managed_memory_supported() -> bool:
+    """Whether this device can oversubscribe its memory."""
+    import cupy as cp  # ty: ignore[unresolved-import]
+
+    try:
+        props = cp.cuda.runtime.getDeviceProperties(cp.cuda.Device().id)
+    except Exception:  # noqa: BLE001 - a probe; any failure means "no".
+        return False
+    return bool(props.get("managedMemory")) and bool(
+        props.get("concurrentManagedAccess")
+    )
+
+
+def _ensure_device_capacity(nbytes: int, what: str = "matrix") -> bool:
+    """Install the managed-memory allocator if ``nbytes`` will not fit.
+
+    CuPy's default pool allocates strictly within device memory, so a transfer
+    larger than what is free dies with ``OutOfMemoryError`` partway through --
+    typically on the index array, after the values have already been uploaded.
+    Because the size is known before any allocation happens, that is avoidable
+    with arithmetic rather than a retry: when the transfer does not fit, switch
+    to managed (unified) memory, which pages between host and device instead of
+    failing.
+
+    Managed memory is slower than a resident copy -- it is bound by PCIe demand
+    paging -- so it is only installed when it is needed. It is worth the cost
+    because the compressed path touches raw data once, not once per iteration.
+
+    Returns
+    -------
+    bool
+        Whether the managed allocator is in effect.
+
+    Raises
+    ------
+    MemoryError
+        If the transfer does not fit and the device cannot oversubscribe, with
+        the sizes involved and a pointer at ``PARAFAC2_BACKEND=cpu``.
+    """
+    global _managed_allocator_installed
+    import cupy as cp  # ty: ignore[unresolved-import]
+
+    if _managed_allocator_installed:
+        return True
+
+    free, total = cp.cuda.Device().mem_info
+    if nbytes <= free * DEVICE_MEMORY_HEADROOM:
+        return False
+
+    if not _managed_memory_supported():
+        raise MemoryError(
+            f"The {what} needs {nbytes / 1e9:.1f} GB on the device but only "
+            f"{free / 1e9:.1f} GB of {total / 1e9:.1f} GB is free, and this "
+            "device cannot oversubscribe its memory (managed memory "
+            "unsupported). Run on the CPU instead, either with "
+            f"backend='cpu' or {BACKEND_ENV_VAR}=cpu."
+        )
+
+    cp.cuda.set_allocator(cp.cuda.MemoryPool(cp.cuda.malloc_managed).malloc)
+    _managed_allocator_installed = True
+    return True
+
+
 def _to_cupy_matrix(mat: np.ndarray | csr_array) -> Any:
     """Move a dense or CSR matrix onto the CuPy device.
+
+    Switches to managed memory first when ``mat`` is larger than free device
+    memory, so a dataset bigger than the card is paged rather than refused.
 
     Parameters
     ----------
@@ -424,6 +522,8 @@ def _to_cupy_matrix(mat: np.ndarray | csr_array) -> Any:
     """
     import cupy as cp  # ty: ignore[unresolved-import]
     import cupyx.scipy.sparse as cpsparse  # ty: ignore[unresolved-import]
+
+    _ensure_device_capacity(device_bytes(mat), what="data matrix")
 
     if issparse(mat):
         mat_csr = cast("csr_array", mat)
