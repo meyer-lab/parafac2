@@ -7,10 +7,17 @@ lets the PARAFAC2 fit run its matrix products on whichever accelerator is
 available without copying data through an intermediate common format.
 """
 
+import os
 from typing import Any, cast
 
 import numpy as np
 from scipy.sparse import csr_array, issparse
+
+#: Environment variable that forces a backend, overriding auto-detection.
+#: An explicit ``backend=`` argument still takes precedence over it.
+BACKEND_ENV_VAR = "PARAFAC2_BACKEND"
+
+_VALID_BACKENDS = ("mlx", "cupy", "cpu")
 
 _MLX_CSR_SPMM_KERNEL = None
 _MLX_CSR_ATOMIC_RSPMM_KERNEL = None
@@ -22,16 +29,40 @@ using namespace metal;
 """
 
 
+def _cuda_is_usable() -> bool:
+    """Whether CuPy is installed *and* a CUDA device is actually present.
+
+    Importing ``cupy`` succeeds on any machine where the package is installed,
+    including one with no GPU, a driver/runtime mismatch, or
+    ``CUDA_VISIBLE_DEVICES=""``. Selecting the CuPy backend on that basis alone
+    defers the failure to the first allocation, which is both later and much
+    harder to attribute.
+    """
+    try:
+        import cupy  # ty: ignore[unresolved-import]
+
+        return cupy.cuda.runtime.getDeviceCount() > 0
+    except Exception:  # noqa: BLE001
+        # Deliberately broad: a missing package raises ImportError, a
+        # driver/runtime mismatch raises CUDARuntimeError, and a broken install
+        # can raise almost anything. In every case the CuPy path is unusable
+        # and the caller should fall through to the next backend.
+        return False
+
+
 def get_backend(backend: str | None = None) -> str:
     """Return the requested backend, or auto-detect the first available one.
+
+    Resolution order: an explicit ``backend`` argument, then the
+    ``PARAFAC2_BACKEND`` environment variable, then auto-detection.
+    Auto-detection prefers CuPy when a CUDA device is genuinely available, then
+    MLX, and otherwise falls back to ``'cpu'``.
 
     Parameters
     ----------
     backend : str, optional
-        One of ``'mlx'``, ``'cupy'``, or ``'cpu'``. If ``None``, the first
-        available accelerator is chosen by attempting to import ``cupy``
-        then ``mlx.core``, falling back to ``'cpu'`` if neither is
-        installed.
+        One of ``'mlx'``, ``'cupy'``, or ``'cpu'``. ``None`` consults
+        ``PARAFAC2_BACKEND`` and then auto-detects.
 
     Returns
     -------
@@ -41,22 +72,32 @@ def get_backend(backend: str | None = None) -> str:
     Raises
     ------
     ValueError
-        If ``backend`` is given but is not one of the supported names.
+        If ``backend`` -- or ``PARAFAC2_BACKEND`` -- is not a supported name.
+
+    Notes
+    -----
+    Setting ``PARAFAC2_BACKEND=cpu`` is the supported way to force the CPU
+    path without editing call sites. It is the only route on a machine where
+    CuPy imports but the data does not fit on the device, since
+    ``CUDA_VISIBLE_DEVICES=""`` does not prevent the import.
     """
+    if backend is None:
+        backend = os.environ.get(BACKEND_ENV_VAR) or None
+        source = f"{BACKEND_ENV_VAR}="
+    else:
+        source = "backend="
+
     if backend is not None:
-        backend_lower = backend.lower()
-        if backend_lower in ("mlx", "cupy", "cpu"):
+        backend_lower = backend.strip().lower()
+        if backend_lower in _VALID_BACKENDS:
             return backend_lower
         raise ValueError(
-            f"Unknown backend '{backend}'. Supported backends: 'mlx', 'cupy', 'cpu'."
+            f"Unknown backend '{backend}' (from {source}{backend!r}). "
+            f"Supported backends: 'mlx', 'cupy', 'cpu'."
         )
 
-    try:
-        import cupy  # noqa: F401  # ty: ignore[unresolved-import]
-
+    if _cuda_is_usable():
         return "cupy"
-    except ImportError:
-        pass
 
     try:
         import mlx.core  # noqa: F401  # ty: ignore[unresolved-import]
