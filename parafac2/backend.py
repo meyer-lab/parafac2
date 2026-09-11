@@ -7,10 +7,23 @@ lets the PARAFAC2 fit run its matrix products on whichever accelerator is
 available without copying data through an intermediate common format.
 """
 
+import os
 from typing import Any, cast
 
 import numpy as np
 from scipy.sparse import csr_array, issparse
+
+# Environment variable that forces a backend, overriding auto-detection.
+BACKEND_ENV_VAR = "PARAFAC2_BACKEND"
+
+_VALID_BACKENDS = ("mlx", "cupy", "cpu")
+
+# Fraction of free device memory a single transfer may claim before the
+# CuPy backend switches to managed memory.
+DEVICE_MEMORY_HEADROOM = 0.8
+
+# Set once the managed-memory allocator has been installed.
+_managed_allocator_installed = False
 
 _MLX_CSR_SPMM_KERNEL = None
 _MLX_CSR_ATOMIC_RSPMM_KERNEL = None
@@ -22,41 +35,47 @@ using namespace metal;
 """
 
 
+def _cuda_is_usable() -> bool:
+    """Whether CuPy is installed and a CUDA device is actually present."""
+    try:
+        import cupy  # ty: ignore[unresolved-import]
+
+        return cupy.cuda.runtime.getDeviceCount() > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def get_backend(backend: str | None = None) -> str:
     """Return the requested backend, or auto-detect the first available one.
 
     Parameters
     ----------
     backend : str, optional
-        One of ``'mlx'``, ``'cupy'``, or ``'cpu'``. If ``None``, the first
-        available accelerator is chosen by attempting to import ``cupy``
-        then ``mlx.core``, falling back to ``'cpu'`` if neither is
-        installed.
+        One of ``'mlx'``, ``'cupy'``, or ``'cpu'``. ``None`` consults
+        ``PARAFAC2_BACKEND`` and then auto-detects.
 
     Returns
     -------
     str
         The resolved backend name: ``'mlx'``, ``'cupy'``, or ``'cpu'``.
-
-    Raises
-    ------
-    ValueError
-        If ``backend`` is given but is not one of the supported names.
     """
+    if backend is None:
+        backend = os.environ.get(BACKEND_ENV_VAR) or None
+        source = f"{BACKEND_ENV_VAR}="
+    else:
+        source = "backend="
+
     if backend is not None:
-        backend_lower = backend.lower()
-        if backend_lower in ("mlx", "cupy", "cpu"):
+        backend_lower = backend.strip().lower()
+        if backend_lower in _VALID_BACKENDS:
             return backend_lower
         raise ValueError(
-            f"Unknown backend '{backend}'. Supported backends: 'mlx', 'cupy', 'cpu'."
+            f"Unknown backend '{backend}' (from {source}{backend!r}). "
+            f"Supported backends: 'mlx', 'cupy', 'cpu'."
         )
 
-    try:
-        import cupy  # noqa: F401  # ty: ignore[unresolved-import]
-
+    if _cuda_is_usable():
         return "cupy"
-    except ImportError:
-        pass
 
     try:
         import mlx.core  # noqa: F401  # ty: ignore[unresolved-import]
@@ -367,8 +386,69 @@ def _rmatmul_mlx(
         return _mlx_to_numpy(mx_res, orig_dtype, lhs.ndim == 1)
 
 
+def device_bytes(mat: np.ndarray | csr_array) -> int:
+    """Bytes ``mat`` will occupy on a CuPy device."""
+    if not issparse(mat):
+        return int(cast("np.ndarray", mat).nbytes)
+
+    mat_csr = cast("csr_array", mat)
+    nnz = int(mat_csr.data.size)
+    int32_max = np.iinfo(np.int32).max
+    idx_size = 8 if (max(mat_csr.shape) > int32_max or nnz > int32_max) else 4
+    return int(mat_csr.data.nbytes + (nnz + mat_csr.shape[0] + 1) * idx_size)
+
+
+def _managed_memory_supported() -> bool:
+    """Whether this device can oversubscribe its memory."""
+    import cupy as cp  # ty: ignore[unresolved-import]
+
+    try:
+        props = cp.cuda.runtime.getDeviceProperties(cp.cuda.Device().id)
+    except Exception:  # noqa: BLE001 - a probe; any failure means "no".
+        return False
+    return bool(props.get("managedMemory")) and bool(
+        props.get("concurrentManagedAccess")
+    )
+
+
+def _ensure_device_capacity(nbytes: int, what: str = "matrix") -> bool:
+    """Install the managed-memory allocator if ``nbytes`` will not fit.
+
+    Raises
+    ------
+    MemoryError
+        If the transfer does not fit and the device cannot oversubscribe, with
+        the sizes involved and a pointer at ``PARAFAC2_BACKEND=cpu``.
+    """
+    global _managed_allocator_installed
+    import cupy as cp  # ty: ignore[unresolved-import]
+
+    if _managed_allocator_installed:
+        return True
+
+    free, total = cp.cuda.Device().mem_info
+    if nbytes <= free * DEVICE_MEMORY_HEADROOM:
+        return False
+
+    if not _managed_memory_supported():
+        raise MemoryError(
+            f"The {what} needs {nbytes / 1e9:.1f} GB on the device but only "
+            f"{free / 1e9:.1f} GB of {total / 1e9:.1f} GB is free, and this "
+            "device cannot oversubscribe its memory (managed memory "
+            "unsupported). Run on the CPU instead, either with "
+            f"backend='cpu' or {BACKEND_ENV_VAR}=cpu."
+        )
+
+    cp.cuda.set_allocator(cp.cuda.MemoryPool(cp.cuda.malloc_managed).malloc)
+    _managed_allocator_installed = True
+    return True
+
+
 def _to_cupy_matrix(mat: np.ndarray | csr_array) -> Any:
     """Move a dense or CSR matrix onto the CuPy device.
+
+    Switches to managed memory first when ``mat`` is larger than free device
+    memory, so a dataset bigger than the card is paged rather than refused.
 
     Parameters
     ----------
@@ -383,6 +463,8 @@ def _to_cupy_matrix(mat: np.ndarray | csr_array) -> Any:
     """
     import cupy as cp  # ty: ignore[unresolved-import]
     import cupyx.scipy.sparse as cpsparse  # ty: ignore[unresolved-import]
+
+    _ensure_device_capacity(device_bytes(mat), what="data matrix")
 
     if issparse(mat):
         mat_csr = cast("csr_array", mat)

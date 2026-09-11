@@ -264,7 +264,35 @@ compressed = compress_dataset(
 pf2_output, r2x = parafac2_nd(compressed, rank=20, random_state=42)
 ```
 
-If no GPU backend is available or installed, `parafac2` falls back to CPU NumPy/SciPy computation automatically.
+Auto-detection selects CuPy only when a CUDA device is genuinely present. This means that a machine with `cupy` but no usable GPU (no card, a driver/runtime mismatch, or `CUDA_VISIBLE_DEVICES=""`) falls back to CPU rather than failing at the first allocation.
+
+### Forcing a backend without editing call sites
+
+Set `PARAFAC2_BACKEND` to `cpu`, `cupy`, or `mlx`:
+
+```bash
+PARAFAC2_BACKEND=cpu python fit.py
+```
+
+An explicit `backend=` argument still takes precedence; however, the environment variable exists because `CUDA_VISIBLE_DEVICES=""` does not force the CPU path and because a wrapper that does not expose `backend=` otherwise leaves no route at all.
+
+---
+
+## What Compression Guarantees
+
+These are properties of the method, not implementation details, and downstream code can rely on them.
+
+**R²X is reported against the original data, not the core.** `CompressedData` carries `norm_tensor` (the full squared Frobenius norm of the mean-centered input) and `lost_var` (the part the projection discarded), and the fit measures its error against `norm_tensor`. An R²X from a compressed fit is therefore directly comparable to one from an uncompressed fit.
+
+**Within-mode component geometry is preserved.** The bases are orthonormal, so cosines between components computed in the core's space equal those computed after decompression. A degeneracy or collinearity screen may therefore be run on the core.
+
+**Factors and projections decompress exactly.** `C = Q @ C_L` and `P_k = Q_k @ P̃_k` are returned in the original coordinate system, with no loss beyond the initial subspace truncation.
+
+How much was discarded is always available:
+
+```python
+print(f"discarded {compressed.lost_var / compressed.norm_tensor:.4%} of the variance")
+```
 
 ---
 
