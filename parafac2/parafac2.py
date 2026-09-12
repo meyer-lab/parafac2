@@ -367,6 +367,15 @@ def parafac2_nd(
         slice_weights,
     ) = extract_dataset_info(X_in, normalize_slices=normalize_slices)
 
+    n_cond = int(np.amax(condition_unique_idxs)) + 1
+    min_cond_size = int(np.min(np.bincount(condition_unique_idxs, minlength=n_cond)))
+    if min_cond_size < rank:
+        raise ValueError(
+            f"Rank ({rank}) cannot exceed the smallest condition's cell count "
+            f"({min_cond_size}); every condition's projection matrix needs at "
+            f"least `rank` cells to be orthonormal."
+        )
+
     X_raw = to_gpu(X_mat, backend=backend)
 
     factors, _ = parafac2_init(
@@ -378,9 +387,7 @@ def parafac2_nd(
         norm_tensor=norm_tensor,
     )
 
-    cond_slices = condition_slices(
-        condition_unique_idxs, int(np.amax(condition_unique_idxs)) + 1
-    )
+    cond_slices = condition_slices(condition_unique_idxs, n_cond)
 
     # W depends only on C, so it stays valid across the A and B updates and is
     # recomputed only once C changes. Each sweep therefore costs exactly two

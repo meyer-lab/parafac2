@@ -477,6 +477,18 @@ def test_parafac2_normalize_slices_changes_result():
         np.testing.assert_allclose(f_off[0], f_on[0], rtol=1e-4, atol=1e-4)
 
 
+def test_parafac2_raises_when_a_condition_has_fewer_cells_than_rank():
+    """A condition's projection matrix needs >= rank cells to be orthonormal;
+    fitting with rank exceeding the smallest condition's cell count must
+    raise a clear error instead of silently producing a broken fit."""
+    shapes = [(2, 20), (30, 20)]
+    rng = np.random.default_rng(0)
+    X_ann = pf2_to_anndata([rng.normal(size=s) for s in shapes], sparse=False)
+
+    with pytest.raises(ValueError, match="smallest condition's cell count"):
+        parafac2_nd(X_ann, rank=3, random_state=1, n_iter_max=5)
+
+
 def test_get_backend_fallback(monkeypatch):
     """Test that get_backend falls back to 'cpu' when mlx and cupy are unimportable."""
     from ..backend import get_backend

@@ -161,21 +161,19 @@ def test_polar_factor_orthonormal_when_full_column_rank(rank, data):
     np.testing.assert_allclose(P.T @ P, np.eye(rank), atol=1e-6)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BUG: polar_factor silently returns non-orthonormal columns when M is "
-        "column-rank-deficient. Its near-zero-norm guard (`col_norms > 1e-10`) "
-        "substitutes 1.0 as the divisor instead of normalizing to *any* unit "
-        "vector, so that column of MV is returned almost unchanged (near-zero "
-        "norm) rather than unit norm. This is reachable in production: "
-        "project_data calls polar_factor per-condition, and any condition with "
-        "fewer cells than the fit rank (or whose cells lie in a lower-dimensional "
-        "subspace) produces a rank-deficient M, silently breaking the "
-        "P_k^T @ P_k == I invariant the rest of the algorithm assumes."
-    ),
-)
 def test_polar_factor_orthonormal_even_when_rank_deficient():
+    """Regression test for a fixed bug: polar_factor used to silently return
+    non-orthonormal columns when M was column-rank-deficient. Its old
+    near-zero-norm guard (`col_norms > 1e-10`) substituted 1.0 as the divisor
+    instead of normalizing to *any* unit vector, so that column of MV came
+    back almost unchanged (near-zero norm) rather than unit norm. This was
+    reachable in production: project_data calls polar_factor per-condition,
+    and any condition whose cells happened to lie in a lower-dimensional
+    subspace produced a rank-deficient M, silently breaking the
+    P_k^T @ P_k == I invariant the rest of the algorithm assumes. Fixed by
+    computing the polar factor via SVD, whose orthonormal `U` factor is
+    exact regardless of M's rank.
+    """
     rng = np.random.default_rng(0)
     # 6x3 but rank 2: the third column is a linear combination of the first two.
     M = rng.normal(size=(6, 2))
@@ -185,38 +183,43 @@ def test_polar_factor_orthonormal_even_when_rank_deficient():
     np.testing.assert_allclose(P.T @ P, np.eye(3), atol=1e-6)
 
 
+def test_polar_factor_raises_when_fewer_rows_than_columns():
+    """Orthonormal columns are impossible when M has fewer rows than
+    columns (a condition with fewer cells than the fit rank): this must
+    raise a clear error rather than returning a bogus result."""
+    M = np.zeros((2, 3))
+    with pytest.raises(ValueError, match="fewer cells than the fit rank"):
+        polar_factor(M)
+
+
 # ---------------------------------------------------------------------------
 # randomized_svd_right
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BUG: randomized_svd_right silently returns fewer than n_components "
-        "columns when n_cells < n_components (+ n_oversamples), instead of "
-        "raising or clipping the request. The random test matrix Y = X @ "
-        "Omega has only n_cells rows, so its column-space rank is capped at "
-        "n_cells no matter how wide Omega is; the QR-based power iteration "
-        "then permanently locks in that narrower subspace, and the final "
-        "`vh[:n_components, :]` slice silently returns whatever narrower "
-        "shape fell out instead of the requested one. Reachable in production: "
-        "compress_genes -> compress_dataset (a condition with fewer cells "
-        "than 4*rank, the 'auto' L_g target) or any direct rank/L_g request "
-        "close to the number of samples produces a Q (and therefore a C or "
-        "compressed core) with fewer columns than the caller asked for, "
-        "silently truncating the requested rank instead of erroring."
-    ),
-)
-def test_randomized_svd_right_returns_the_requested_number_of_columns():
+def test_randomized_svd_right_raises_instead_of_silently_truncating():
+    """Regression test for a fixed bug: randomized_svd_right used to
+    silently return fewer than n_components columns when n_cells <
+    n_components (+ n_oversamples), instead of raising. The random test
+    matrix Y = X @ Omega has only n_cells rows, so its column-space rank is
+    capped at n_cells no matter how wide Omega is; the QR-based power
+    iteration then permanently locked in that narrower subspace, and the
+    final `vh[:n_components, :]` slice silently returned whatever narrower
+    shape fell out instead of the requested one. Reachable in production:
+    compress_genes -> compress_dataset (a condition with fewer cells than
+    4*rank, the 'auto' L_g target) or any direct rank/L_g request close to
+    the number of samples produced a Q (and therefore a C or compressed
+    core) with fewer columns than the caller asked for, silently truncating
+    the requested rank instead of erroring. Fixed by validating
+    n_components against min(n_cells, n_genes) upfront.
+    """
     rng = np.random.default_rng(0)
-    X = rng.normal(size=(2, 5))  # only 2 rows: rank <= 2
+    X = rng.normal(size=(2, 5))  # only 2 rows: max achievable rank is 2
 
-    Q = randomized_svd_right(
-        X, None, n_components=4, n_oversamples=0, n_power_iter=2, random_state=0
-    )
-
-    assert Q.shape == (5, 4)
+    with pytest.raises(ValueError, match="cannot exceed the maximum possible rank"):
+        randomized_svd_right(
+            X, None, n_components=4, n_oversamples=0, n_power_iter=2, random_state=0
+        )
 
 
 # ---------------------------------------------------------------------------

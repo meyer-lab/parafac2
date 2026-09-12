@@ -195,13 +195,36 @@ def calc_W(X: Any, means: np.ndarray | None, C: np.ndarray) -> np.ndarray:
 
 
 def polar_factor(M: np.ndarray) -> np.ndarray:
-    """Compute the nearest orthonormal matrix to M via polar decomposition."""
-    G = M.T @ M
-    _, V = np.linalg.eigh(G)
-    MV = M @ V
-    col_norms = np.linalg.norm(MV, axis=0, keepdims=True)
-    safe_norms = np.where(col_norms > 1e-10, col_norms, 1.0)
-    return (MV / safe_norms) @ V.T
+    """Compute the nearest matrix with orthonormal columns to M.
+
+    Uses the thin SVD ``M = U S V^T``, whose orthonormal factor ``U @ V^T``
+    is the (Frobenius-norm) nearest matrix with orthonormal columns to M --
+    unlike a näive ``M @ V / diag(S)`` reconstruction, this stays exactly
+    orthonormal even when M is column-rank-deficient (some singular values
+    are zero), since LAPACK's SVD always returns a fully orthonormal ``U``
+    regardless of M's rank, filling in arbitrary-but-orthonormal directions
+    for the zero-singular-value columns.
+
+    Raises
+    ------
+    ValueError
+        If M has fewer rows than columns: no matrix of that shape can have
+        orthonormal columns (there is no room for that many independent
+        unit vectors), so this is a genuine shape mismatch upstream (e.g. a
+        PARAFAC2 condition with fewer cells than the fit rank) rather than
+        something this function can paper over.
+    """
+    n_rows, rank = M.shape
+    if n_rows < rank:
+        raise ValueError(
+            f"Cannot form an orthonormal {n_rows}x{rank} matrix: orthonormal "
+            f"columns require at least as many rows as columns, but only "
+            f"{n_rows} are available for {rank} requested. This condition "
+            f"has fewer cells than the fit rank; PARAFAC2 requires every "
+            f"condition to have at least `rank` cells."
+        )
+    U, _S, Vt = np.linalg.svd(M, full_matrices=False)
+    return U @ Vt
 
 
 def project_data(
@@ -466,14 +489,32 @@ def randomized_svd_right(
     -------
     np.ndarray
         Array of shape ``(n_genes, n_components)`` with orthonormal columns.
+
+    Raises
+    ------
+    ValueError
+        If ``n_components`` exceeds ``min(n_cells, n_genes)``, the maximum
+        possible rank of ``X``. The random test matrix ``Y = X @ Omega`` has
+        only ``n_cells`` rows, so its column-space rank is capped at
+        ``n_cells`` no matter how wide ``Omega`` is; without this check, a
+        too-large request would silently come back with fewer columns than
+        asked for instead of erroring.
     """
+    n_cells, n_genes = X.shape
+    max_components = min(n_cells, n_genes)
+    if n_components > max_components:
+        raise ValueError(
+            f"n_components ({n_components}) cannot exceed the maximum "
+            f"possible rank of a {n_cells}x{n_genes} matrix "
+            f"({max_components})."
+        )
+
     rng = (
         random_state
         if isinstance(random_state, np.random.Generator)
         else np.random.default_rng(random_state)
     )
-    n_genes = X.shape[1]
-    l_dim = min(n_genes, n_components + n_oversamples)
+    l_dim = min(n_genes, n_cells, n_components + n_oversamples)
 
     Omega = rng.normal(size=(n_genes, l_dim)).astype(np.float64)
     Y = np.asarray(matmul(X, Omega), dtype=np.float64)

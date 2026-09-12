@@ -86,21 +86,15 @@ def test_prepare_dataset_invariants(counts, gene_threshold, n_conditions, data):
     assert np.all(np.isfinite(out.var["means"]))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ZeroDivisionError,
-    reason=(
-        "BUG: prepare_dataset crashes with an opaque `ZeroDivisionError` "
-        "(from deep inside scipy.sparse's `.mean()`) instead of a clear, "
-        "actionable error when the cell/gene count filters remove every "
-        "row (e.g. every cell's total count is <= 10). This is a plausible "
-        "real input -- a low-depth or heavily subsampled dataset, or a small "
-        "toy/test dataset -- and should raise a message naming the cause "
-        "(e.g. 'no cells passed the count filter') rather than an unrelated "
-        "arithmetic error."
-    ),
-)
 def test_prepare_dataset_raises_a_clear_error_when_everything_is_filtered():
+    """Regression test for a fixed bug: prepare_dataset used to crash with
+    an opaque `ZeroDivisionError` (from deep inside scipy.sparse's `.mean()`)
+    instead of a clear, actionable error when the cell/gene count filters
+    removed every row (e.g. every cell's total count is <= 10) -- a
+    plausible real input (a low-depth/heavily subsampled dataset, or a
+    small toy/test dataset). Fixed by validating that at least one cell and
+    one gene survive the filters before proceeding.
+    """
     counts = np.ones(
         (5, 5), dtype=np.float32
     )  # every row sums to 5, below the >10 filter
@@ -109,3 +103,13 @@ def test_prepare_dataset_raises_a_clear_error_when_everything_is_filtered():
 
     with pytest.raises(ValueError, match="no cells|no genes|filter"):
         prepare_dataset(adata, "condition", 0.0)
+
+
+def test_prepare_dataset_raises_when_no_gene_passes_the_threshold():
+    """Cells survive the count filter but every gene is below geneThreshold."""
+    counts = np.ones((5, 5), dtype=np.float32) * 100.0  # cells easily pass
+    adata = anndata.AnnData(sps.csr_array(counts))
+    adata.obs["condition"] = ["c"] * 5
+
+    with pytest.raises(ValueError, match="no genes"):
+        prepare_dataset(adata, "condition", geneThreshold=1e6)
