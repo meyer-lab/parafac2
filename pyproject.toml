@@ -45,6 +45,7 @@ dev = [
     "pytest>=9.0",
     "pytest-cov>=7.0",
     "ty>=0.0.50",
+    "hypothesis>=6.100",
 ]
 docs = [
     "mkdocs>=1.6",

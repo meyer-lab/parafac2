@@ -16,7 +16,6 @@ from ..parafac2 import parafac2_init, parafac2_nd
 from ..utils import (
     calc_err,
     calc_norm_sq,
-    calc_slice_norms,
     calc_W,
     condition_slices,
     parafac_update,
@@ -341,28 +340,6 @@ def test_parafac2_no_means():
     assert len(f) == 3
 
 
-def test_calc_norm_sq():
-    """Test calc_norm_sq for dense and sparse with and without means."""
-    rng = np.random.default_rng(42)
-    raw = rng.normal(size=(30, 20)).astype(np.float64)
-    raw[rng.random(raw.shape) > 0.3] = 0.0
-    sparse_mat = csr_array(raw)
-
-    # Without means
-    norm_dense_0 = calc_norm_sq(raw)
-    norm_sparse_0 = calc_norm_sq(sparse_mat)
-    np.testing.assert_allclose(norm_dense_0, np.sum(raw**2))
-    np.testing.assert_allclose(norm_dense_0, norm_sparse_0)
-
-    # With means
-    means = rng.normal(size=20).astype(np.float64)
-    norm_dense_m = calc_norm_sq(raw, means)
-    norm_sparse_m = calc_norm_sq(sparse_mat, means)
-    expected_m = np.sum((raw - means) ** 2)
-    np.testing.assert_allclose(norm_dense_m, expected_m, rtol=1e-10)
-    np.testing.assert_allclose(norm_sparse_m, expected_m, rtol=1e-10)
-
-
 def test_project_data_sparse_dense_with_means():
     """Test project_data produces identical results for sparse and dense with non-zero means."""
     rng = np.random.default_rng(42)
@@ -393,23 +370,6 @@ def test_project_data_sparse_dense_with_means():
     )
     for pd, ps in zip(proj_d, proj_s):
         np.testing.assert_allclose(pd, ps, rtol=1e-5, atol=1e-5)
-
-
-def test_condition_slices_grouped_and_shuffled():
-    """Grouped rows should give zero-copy slices; shuffled rows must still group."""
-    grouped = np.repeat(np.arange(4), 5)
-    sels = condition_slices(grouped, 4)
-    assert all(isinstance(s, slice) for s in sels)
-    for k, s in enumerate(sels):
-        np.testing.assert_array_equal(grouped[s], k)
-
-    rng = np.random.default_rng(0)
-    perm = rng.permutation(grouped.size)
-    shuffled = grouped[perm]
-    sels_s = condition_slices(shuffled, 4)
-    assert all(isinstance(s, np.ndarray) for s in sels_s)
-    for k, s in enumerate(sels_s):
-        np.testing.assert_array_equal(shuffled[s], np.full(5, k))
 
 
 def test_row_order_does_not_change_fit():
@@ -460,46 +420,6 @@ def test_n_inner_monotonic_and_consistent(n_inner: int):
     assert r2x > 0.0
     for P_k in p:
         np.testing.assert_allclose(P_k.T @ P_k, np.eye(rank), atol=1e-6)
-
-
-def test_calc_slice_norms():
-    """Test calc_slice_norms against a brute-force per-condition reference,
-    for dense and sparse input, with and without means."""
-    rng = np.random.default_rng(0)
-    shapes = [10, 15, 7]
-    n_cond = len(shapes)
-    X_list = [rng.normal(size=(n, 12)) for n in shapes]
-    X_dense = np.concatenate(X_list, axis=0)
-    cond_idxs = np.concatenate([[i] * n for i, n in enumerate(shapes)])
-
-    # Introduce sparsity for the sparse variant
-    X_sparse_dense = X_dense.copy()
-    X_sparse_dense[rng.random(X_sparse_dense.shape) > 0.5] = 0.0
-    X_sparse = csr_array(X_sparse_dense)
-
-    for means in (None, rng.normal(size=12)):
-        expected = np.array(
-            [
-                np.linalg.norm(
-                    X_dense[cond_idxs == i] - (means if means is not None else 0.0)
-                )
-                for i in range(n_cond)
-            ]
-        )
-        result_dense = calc_slice_norms(X_dense, means, cond_idxs, n_cond)
-        np.testing.assert_allclose(result_dense, expected, rtol=1e-10)
-
-        expected_sparse = np.array(
-            [
-                np.linalg.norm(
-                    X_sparse_dense[cond_idxs == i]
-                    - (means if means is not None else 0.0)
-                )
-                for i in range(n_cond)
-            ]
-        )
-        result_sparse = calc_slice_norms(X_sparse, means, cond_idxs, n_cond)
-        np.testing.assert_allclose(result_sparse, expected_sparse, rtol=1e-8, atol=1e-8)
 
 
 def test_parafac2_normalize_slices_runs_and_orthonormal():
@@ -555,74 +475,6 @@ def test_parafac2_normalize_slices_changes_result():
     # changes which factors the MTTKRP updates converge to.
     with pytest.raises(AssertionError):
         np.testing.assert_allclose(f_off[0], f_on[0], rtol=1e-4, atol=1e-4)
-
-
-def _check_backend_available(backend: str) -> bool:
-    """Return whether the given compute backend's package is importable.
-
-    Parameters
-    ----------
-    backend : str
-        One of ``'cpu'``, ``'mlx'``, or ``'cupy'``.
-
-    Returns
-    -------
-    bool
-        True if the backend can be used in this environment.
-    """
-    if backend == "cpu":
-        return True
-    elif backend == "mlx":
-        try:
-            import mlx.core  # noqa: F401  # ty: ignore[unresolved-import]
-
-            return True
-        except ImportError:
-            return False
-    elif backend == "cupy":
-        try:
-            import cupy  # noqa: F401  # ty: ignore[unresolved-import]
-
-            return True
-        except ImportError:
-            return False
-    return False
-
-
-@pytest.mark.parametrize("sparse", [False, True])
-@pytest.mark.parametrize("backend", ["cpu", "mlx", "cupy"])
-def test_backend_matrix_ops(sparse: bool, backend: str):
-    """Test GPUMatrix matmul and rmatmul for available backends against NumPy."""
-    from ..backend import GPUMatrix
-
-    if not _check_backend_available(backend):
-        pytest.skip(f"Backend '{backend}' is not installed.")
-
-    rng = np.random.default_rng(42)
-    raw = rng.normal(size=(25, 20)).astype(np.float32)
-    mat = csr_array(raw) if sparse else raw
-
-    gpu_mat = GPUMatrix(mat, backend=backend)
-
-    # Left matmul (2D and 1D)
-    rhs2 = rng.normal(size=(20, 5)).astype(np.float32)
-    res_mat = gpu_mat @ rhs2
-    expected_mat = raw @ rhs2
-    np.testing.assert_allclose(res_mat, expected_mat, rtol=1e-5, atol=1e-5)
-
-    # Right matmul (2D and 1D)
-    lhs2 = rng.normal(size=(4, 25)).astype(np.float32)
-    res_rmat = lhs2 @ gpu_mat
-    expected_rmat = lhs2 @ raw
-    np.testing.assert_allclose(res_rmat, expected_rmat, rtol=1e-5, atol=1e-5)
-
-
-def test_invalid_backend():
-    """Test that get_backend raises ValueError for an unrecognized backend name."""
-    from ..backend import get_backend
-
-    with pytest.raises(ValueError, match="Unknown backend"):
-        get_backend("nonexistent_backend")
 
 
 def test_get_backend_fallback(monkeypatch):
