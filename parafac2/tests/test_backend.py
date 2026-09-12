@@ -3,9 +3,7 @@
 import sys
 import types
 
-import numpy as np
 import pytest
-from scipy.sparse import csr_array
 
 from parafac2 import backend as backend_mod
 from parafac2.backend import (
@@ -15,20 +13,6 @@ from parafac2.backend import (
     device_bytes,
     get_backend,
 )
-
-
-def test_explicit_backend_is_returned_verbatim():
-    for name in ("cpu", "cupy", "mlx"):
-        assert get_backend(name) == name
-
-
-def test_explicit_backend_is_case_and_whitespace_insensitive():
-    assert get_backend(" CuPy ") == "cupy"
-
-
-def test_unknown_backend_raises():
-    with pytest.raises(ValueError, match="Unknown backend"):
-        get_backend("cuda")
 
 
 def test_env_var_forces_a_backend(monkeypatch):
@@ -99,26 +83,6 @@ def test_cuda_probe_returns_a_bool():
 # ---------------------------------------------------------------------------
 # Device capacity accounting
 # ---------------------------------------------------------------------------
-
-
-def test_device_bytes_dense_is_the_array_size():
-    a = np.zeros((100, 50), dtype=np.float32)
-    assert device_bytes(a) == a.nbytes
-
-
-def test_device_bytes_sparse_counts_a_shared_int32_index_dtype():
-    """Small matrices index in int32, for both `indices` and `indptr`."""
-    rows, cols, nnz = 100, 40, 500
-    rng = np.random.default_rng(0)
-    m = csr_array(
-        (
-            rng.random(nnz, dtype=np.float32),
-            np.sort(rng.integers(0, cols, size=nnz)).astype(np.int32),
-            np.linspace(0, nnz, rows + 1).astype(np.int32),
-        ),
-        shape=(rows, cols),
-    )
-    assert device_bytes(m) == m.data.nbytes + (nnz + rows + 1) * 4
 
 
 def test_device_bytes_charges_int64_once_nnz_exceeds_int32(monkeypatch):

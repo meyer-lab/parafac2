@@ -110,8 +110,11 @@ def compress_genes(
         ``(total_cells, L_g)``, ``Q`` is ``(n_genes, L_g)`` orthonormal, and
         ``norm_Xc_sq`` is the squared Frobenius norm of ``X_c``.
     """
-    _n_cells, n_genes = X.shape
-    L_g = min(n_genes, L_g)
+    n_cells, n_genes = X.shape
+    # Clip to the data's own maximum rank: a target that exceeds it is not
+    # achievable (randomized_svd_right raises otherwise), but here it should
+    # simply degrade to the largest compression the data actually supports.
+    L_g = min(n_genes, n_cells, L_g)
 
     Q = randomized_svd_right(
         X,

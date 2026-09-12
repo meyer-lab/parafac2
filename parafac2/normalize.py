@@ -52,6 +52,18 @@ def prepare_dataset(
     cell_mask = np.ravel(X_X_raw.sum(axis=1)) > 10
     gene_mask = np.ravel(X_X_raw.sum(axis=0)) > (geneThreshold * X_X_raw.shape[0])
 
+    if not cell_mask.any():
+        raise ValueError(
+            "prepare_dataset: no cells passed the count filter (every cell's "
+            "total count is <= 10); check the input data."
+        )
+    if not gene_mask.any():
+        raise ValueError(
+            "prepare_dataset: no genes passed the count filter (every gene's "
+            f"total count is <= {geneThreshold} * n_cells); check the input "
+            "data or lower geneThreshold."
+        )
+
     # Subset and materialize actual AnnData object before modifying X.X
     if cell_mask.all() and gene_mask.all():
         X = X.copy()
