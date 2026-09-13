@@ -532,22 +532,49 @@ class GPUMatrix:
     Parameters
     ----------
     mat : np.ndarray | csr_array
-        The matrix to wrap and transfer to the selected device.
+        The matrix to wrap and transfer to the selected device. A type other
+        than ``np.ndarray``/``csr_array`` is treated as an opaque duck-typed
+        matrix (see the ``parafac2.utils`` module docstring): it is left
+        alone on ``backend='cpu'`` (its own ``__matmul__``/``__rmatmul__``
+        does the work), and on a GPU backend it must implement
+        ``to_device(backend)``, returning a device-resident object that
+        itself implements ``__matmul__``/``__rmatmul__`` against a NumPy
+        array -- parafac2 has no transfer logic of its own for such a type's
+        storage format.
     backend : str, optional
         One of ``'mlx'``, ``'cupy'``, or ``'cpu'``. If ``None``, the first
         available accelerator is auto-detected (see :func:`get_backend`).
+
+    Raises
+    ------
+    TypeError
+        If ``mat`` is a duck-typed matrix without a ``to_device`` method and
+        a GPU backend (``'cupy'``/``'mlx'``) is selected.
     """
 
     __array_priority__ = 1000
 
-    def __init__(self, mat: np.ndarray | csr_array, backend: str | None = None) -> None:
+    def __init__(self, mat: Any, backend: str | None = None) -> None:
         """Transfer ``mat`` to the resolved backend's device memory."""
         self.backend = get_backend(backend)
         self.shape = mat.shape
         self.dtype = mat.dtype
         self.is_sparse = issparse(mat)
+        self.is_custom = not (isinstance(mat, np.ndarray) or self.is_sparse)
 
-        if self.backend == "cupy":
+        if self.is_custom:
+            if self.backend == "cpu":
+                self.device_mat = mat
+            elif (to_device := getattr(mat, "to_device", None)) is not None:
+                self.device_mat = to_device(self.backend)
+            else:
+                raise TypeError(
+                    f"{type(mat).__name__} does not implement `to_device`, so "
+                    f"it cannot run on the {self.backend!r} backend. Pass "
+                    "backend='cpu', or convert it to a NumPy array or SciPy "
+                    "sparse array first."
+                )
+        elif self.backend == "cupy":
             self.device_mat = _to_cupy_matrix(mat)
         elif self.backend == "mlx":
             self.device_mat = _to_mlx_matrix(mat)
@@ -567,6 +594,8 @@ class GPUMatrix:
         np.ndarray
             The product, as a NumPy array.
         """
+        if self.is_custom:
+            return self.device_mat @ rhs
         if self.backend == "cupy":
             return _matmul_cupy(self.device_mat, rhs)
         elif self.backend == "mlx":
@@ -588,6 +617,8 @@ class GPUMatrix:
         np.ndarray
             The product, as a NumPy array.
         """
+        if self.is_custom:
+            return lhs @ self.device_mat
         if self.backend == "cupy":
             return _rmatmul_cupy(lhs, self.device_mat)
         elif self.backend == "mlx":
@@ -698,17 +729,16 @@ def matrix_dtype(mat: Any) -> np.dtype:
     return np.dtype(getattr(mat, "dtype", np.float64))
 
 
-def to_gpu(
-    mat: np.ndarray | csr_array, backend: str | None = None
-) -> GPUMatrix | np.ndarray | csr_array:
+def to_gpu(mat: Any, backend: str | None = None) -> GPUMatrix | Any:
     """
     Transfer matrix to GPU memory if CuPy or MLX is requested/available,
     returning a GPUMatrix wrapper. Otherwise returns the CPU matrix as-is.
 
     Parameters
     ----------
-    mat : np.ndarray | csr_array
-        The matrix to (optionally) transfer.
+    mat : np.ndarray | csr_array | Any
+        The matrix to (optionally) transfer. See :class:`GPUMatrix` for how
+        a duck-typed matrix beyond ``np.ndarray``/``csr_array`` is handled.
     backend : str, optional
         One of ``'mlx'``, ``'cupy'``, or ``'cpu'``. If ``None``, the first
         available accelerator is auto-detected (see :func:`get_backend`).
