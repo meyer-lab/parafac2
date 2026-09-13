@@ -18,6 +18,25 @@ resident. In particular the mode-0 and mode-1 MTTKRPs and the reconstruction
 error are all functions of ``S`` alone, so the projections and both of those
 factor updates can be recomputed from a cached ``W`` without re-reading the
 data.
+
+Beyond ``np.ndarray``/``scipy.sparse``, ``X`` may be any duck-typed matrix
+that implements ``.shape``, ``.dtype``, ``__matmul__``/``__rmatmul__`` (used
+by :func:`~parafac2.backend.matmul`/:func:`~parafac2.backend.rmatmul`, and so
+by :func:`calc_W`/:func:`parafac_update`/``randomized_svd_right`` without any
+further changes here), and optionally ``norm_sq()``/``slice_norms(condition_idxs,
+n_cond)`` (used by :func:`calc_norm_sq`/:func:`calc_slice_norms` in place of
+the dense/sparse fast paths below) and ``to_device(backend)`` (used by
+:func:`~parafac2.backend.to_gpu` to run on a GPU backend). A type that
+already centers itself internally (e.g. an implicit mean-subtracted view)
+should implement ``norm_sq``/``slice_norms`` to account for that on its own,
+matching what :func:`~parafac2.compress.extract_dataset_info` expects when it
+finds no explicit ``means``.
+
+Such a type should also set ``__array_ufunc__ = None`` (as ``vsparse``'s
+arrays do). Without it, ``lhs @ X`` for a plain NumPy ``lhs`` has NumPy try to
+broadcast ``X`` into an ``ndarray`` itself rather than deferring to ``X``'s
+own ``__rmatmul__``, which fails outright for a type that cannot be
+converted to a NumPy array (as most duck-typed backends here cannot).
 """
 
 from __future__ import annotations
@@ -36,16 +55,18 @@ if TYPE_CHECKING:
     from scipy.sparse import csr_array
 
 
-def calc_norm_sq(X: np.ndarray | csr_array, means: np.ndarray | None = None) -> float:
+def calc_norm_sq(X: Any, means: np.ndarray | None = None) -> float:
     """Return the squared Frobenius norm of the mean-centered matrix.
 
     Parameters
     ----------
-    X : np.ndarray | csr_array
-        The (dense or sparse) matrix to compute the norm of.
-    means : np.ndarray | None, default None
-        Per-column means to subtract before computing the norm. If ``None``
-        or all-zero, ``X`` is used uncentered.
+    X : np.ndarray | csr_array | Any
+        The (dense or sparse) matrix to compute the norm of. A type other
+        than ``np.ndarray``/``csr_array`` may instead implement a ``norm_sq()``
+        method (taking no arguments, since such a type is expected to already
+        account for any centering internally -- see the module docstring's
+        note on duck-typed backends), which is used in preference to the
+        dense/sparse paths below.
 
     Returns
     -------
@@ -53,6 +74,15 @@ def calc_norm_sq(X: np.ndarray | csr_array, means: np.ndarray | None = None) -> 
         ``sum((X - means) ** 2)``, computed without densifying a sparse
         ``X``.
     """
+    if hasattr(X, "norm_sq"):
+        if means is not None and not np.all(means == 0):
+            raise ValueError(
+                f"{type(X).__name__} implements its own centering via "
+                "`norm_sq()`; passing a nonzero `means` alongside it is not "
+                "supported."
+            )
+        return float(X.norm_sq())
+
     if means is None or np.all(means == 0):
         if issparse(X):
             return float(np.sum(cast("csr_array", X).data ** 2))
@@ -70,7 +100,7 @@ def calc_norm_sq(X: np.ndarray | csr_array, means: np.ndarray | None = None) -> 
 
 
 def calc_slice_norms(
-    X: np.ndarray | csr_array,
+    X: Any,
     means: np.ndarray | None,
     condition_unique_idxs: np.ndarray,
     n_cond: int,
@@ -79,8 +109,13 @@ def calc_slice_norms(
 
     Parameters
     ----------
-    X : np.ndarray | csr_array
-        The (dense or sparse) matrix stacked across all conditions.
+    X : np.ndarray | csr_array | Any
+        The (dense or sparse) matrix stacked across all conditions. A type
+        other than ``np.ndarray``/``csr_array`` may instead implement a
+        ``slice_norms(condition_idxs, n_cond)`` method (since such a type is
+        expected to already account for any centering internally -- see
+        :func:`calc_norm_sq`), which is used in preference to the dense/
+        sparse paths below.
     means : np.ndarray | None
         Per-column means to subtract before computing each slice's norm, or
         ``None``/all-zero to skip centering.
@@ -97,6 +132,16 @@ def calc_slice_norms(
         condition's (mean-centered) rows of ``X``.
     """
     idxs = np.asarray(condition_unique_idxs)
+
+    if hasattr(X, "slice_norms"):
+        if means is not None and not np.all(means == 0):
+            raise ValueError(
+                f"{type(X).__name__} implements its own centering via "
+                "`slice_norms()`; passing a nonzero `means` alongside it is "
+                "not supported."
+            )
+        return np.asarray(X.slice_norms(idxs, n_cond), dtype=np.float64)
+
     counts = np.bincount(idxs, minlength=n_cond).astype(np.float64)
 
     if issparse(X):
