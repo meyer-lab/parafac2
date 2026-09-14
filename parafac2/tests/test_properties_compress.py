@@ -72,12 +72,7 @@ def test_compress_genes_cannot_increase_variance(n_cells, n_genes, data):
 
     _X_c, _Q, norm_Xc_sq = compress_genes(X, means, L_g=L_g, random_state=0)
 
-    # float32 throughout (not float64) means this can overshoot the exact
-    # bound by float32-scale rounding error, not just a fixed epsilon --
-    # matches the atol/rtol combination the sibling exactness test above
-    # already uses for the same comparison.
-    reference = np.sum((X - means) ** 2)
-    assert norm_Xc_sq <= reference * (1 + 1e-4) + 1e-4
+    assert norm_Xc_sq <= np.sum((X - means) ** 2) + 1e-6
 
 
 # ---------------------------------------------------------------------------
