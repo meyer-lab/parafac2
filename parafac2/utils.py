@@ -140,15 +140,15 @@ def calc_slice_norms(
                 "`slice_norms()`; passing a nonzero `means` alongside it is "
                 "not supported."
             )
-        return np.asarray(X.slice_norms(idxs, n_cond), dtype=np.float32)
+        return np.asarray(X.slice_norms(idxs, n_cond), dtype=np.float64)
 
-    counts = np.bincount(idxs, minlength=n_cond).astype(np.float32)
+    counts = np.bincount(idxs, minlength=n_cond).astype(np.float64)
 
     if issparse(X):
         mat_csr = cast("csr_array", X)
         group_of_nnz = np.repeat(idxs, np.diff(mat_csr.indptr))
         sums_sq = np.bincount(
-            group_of_nnz, weights=mat_csr.data.astype(np.float32) ** 2, minlength=n_cond
+            group_of_nnz, weights=mat_csr.data.astype(np.float64) ** 2, minlength=n_cond
         )
         if means is None or np.all(means == 0):
             return np.sqrt(sums_sq)
@@ -156,7 +156,7 @@ def calc_slice_norms(
         means_arr = np.asarray(means).ravel()
         cross = np.bincount(
             group_of_nnz,
-            weights=mat_csr.data.astype(np.float32) * means_arr[mat_csr.indices],
+            weights=mat_csr.data.astype(np.float64) * means_arr[mat_csr.indices],
             minlength=n_cond,
         )
         mean_sq_total = np.sum(means_arr**2)
@@ -233,7 +233,7 @@ def calc_W(X: Any, means: np.ndarray | None, C: np.ndarray) -> np.ndarray:
         The float64 array ``W`` of shape ``(total_cells, rank)``.
     """
     C_op = np.ascontiguousarray(C, dtype=matrix_dtype(X))
-    W = np.asarray(matmul(X, C_op), dtype=np.float32)
+    W = np.asarray(matmul(X, C_op), dtype=np.float64)
     if means is not None:
         W -= means @ C
     return W
@@ -446,7 +446,7 @@ def parafac_update(
             w_k = 1.0 if slice_weights is None else slice_weights[k]
             H_T[:, sel] = (projections[k] @ (B * A[k]) * w_k).T
 
-        mttkrp_T = np.asarray(rmatmul(H_T, X), dtype=np.float32)
+        mttkrp_T = np.asarray(rmatmul(H_T, X), dtype=np.float64)
         if means is not None:
             mttkrp_T -= np.outer(H_T.sum(axis=1), means)
         mttkrp = mttkrp_T.T
@@ -561,29 +561,31 @@ def randomized_svd_right(
     )
     l_dim = min(n_genes, n_cells, n_components + n_oversamples)
 
-    Omega = rng.normal(size=(n_genes, l_dim)).astype(np.float32)
-    Y = np.asarray(matmul(X, Omega), dtype=np.float32)
+    X_dtype = matrix_dtype(X)
+
+    Omega = rng.normal(size=(n_genes, l_dim)).astype(np.float64)
+    Y = np.asarray(matmul(X, Omega.astype(X_dtype)), dtype=np.float64)
     if means is not None:
         Y -= means @ Omega
 
     for _ in range(n_power_iter):
         Q, _ = np.linalg.qr(Y, mode="reduced")
-        Z_T = np.asarray(rmatmul(Q.T, X), dtype=np.float32)
+        Z_T = np.asarray(rmatmul(Q.T.astype(X_dtype), X), dtype=np.float64)
         if means is not None:
             Z_T -= np.outer(np.sum(Q.T, axis=1), means)
         Z = Z_T.T
         Q_z, _ = np.linalg.qr(Z, mode="reduced")
-        Y = np.asarray(matmul(X, Q_z), dtype=np.float32)
+        Y = np.asarray(matmul(X, Q_z.astype(X_dtype)), dtype=np.float64)
         if means is not None:
             Y -= means @ Q_z
 
     Q, _ = np.linalg.qr(Y, mode="reduced")
-    B = np.asarray(rmatmul(Q.T, X), dtype=np.float32)
+    B = np.asarray(rmatmul(Q.T.astype(X_dtype), X), dtype=np.float64)
     if means is not None:
         B -= np.outer(np.sum(Q.T, axis=1), means)
 
     _, _, vh = np.linalg.svd(B, full_matrices=False)
-    return vh[:n_components, :].T.astype(np.float32)
+    return vh[:n_components, :].T.astype(np.float64)
 
 
 def extract_dataset_info(

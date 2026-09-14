@@ -152,8 +152,8 @@ def parafac2_init(
     )
 
     factors = [
-        np.ones((n_cond, rank), dtype=np.float32),
-        np.eye(rank, dtype=np.float32),
+        np.ones((n_cond, rank), dtype=np.float64),
+        np.eye(rank, dtype=np.float64),
         C,
     ]
     return factors, norm_tensor
