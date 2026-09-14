@@ -477,7 +477,78 @@ def _to_cupy_matrix(mat: np.ndarray | csr_array) -> Any:
     return cp.asarray(mat)
 
 
-def _matmul_cupy(cp_mat: Any, rhs: np.ndarray) -> np.ndarray:
+def _sparse_matmul_nvmath(cp_mat: Any, cp_rhs: Any) -> Any:
+    """Compute ``cp_mat @ cp_rhs`` (sparse CSR @ dense) via nvmath-python.
+
+    CuPy's own ``@`` for a CSR-by-dense product prefers cuSPARSE's legacy
+    ``csrmm2`` routine, which only understands 32-bit indices: it hands the
+    raw ``indices``/``indptr`` device pointers straight to that int32-only
+    API with no dtype check, so once a matrix has more than ``2**31 - 1``
+    nonzeros (and therefore int64 indices), the call reads those buffers as
+    the wrong width and silently corrupts the result. nvmath-python's
+    ``nvmath.sparse.matmul`` goes through cuSPARSE's *generic* SpMM API
+    instead, which is told the operands' actual index type
+    (``CUSPARSE_INDEX_64I`` when needed), so it stays correct at any ``nnz``.
+
+    Parameters
+    ----------
+    cp_mat : Any
+        A ``cupyx.scipy.sparse.csr_matrix`` already resident on the device.
+    cp_rhs : Any
+        A CuPy dense array (1-D or 2-D).
+
+    Returns
+    -------
+    Any
+        The product as a CuPy array, matching ``cp_rhs``'s dimensionality.
+    """
+    import cupy as cp  # ty: ignore[unresolved-import]
+    import nvmath  # ty: ignore[unresolved-import]
+
+    rhs_2d = cp_rhs[:, None] if cp_rhs.ndim == 1 else cp_rhs
+    out_dtype = cp.result_type(cp_mat.dtype, cp_rhs.dtype)
+    out = cp.zeros((cp_mat.shape[0], rhs_2d.shape[1]), dtype=out_dtype)
+    res = nvmath.sparse.matmul(cp_mat, rhs_2d, out)
+    return res.ravel() if cp_rhs.ndim == 1 else res
+
+
+def _sparse_rmatmul_nvmath(cp_lhs: Any, cp_mat: Any) -> Any:
+    """Compute ``cp_lhs @ cp_mat`` (dense @ sparse CSR) via nvmath-python.
+
+    nvmath's SpMM always takes the sparse operand first, so this computes
+    the equivalent ``(cp_mat.T @ cp_lhs.T).T`` using the ``is_transpose``
+    matrix qualifier rather than materializing a transposed copy of
+    ``cp_mat``. See :func:`_sparse_matmul_nvmath` for why cuSPARSE's legacy
+    routines (which CuPy's own ``@`` would otherwise use here) are unsafe
+    for int64-indexed matrices.
+
+    Parameters
+    ----------
+    cp_lhs : Any
+        A CuPy dense array (1-D or 2-D).
+    cp_mat : Any
+        A ``cupyx.scipy.sparse.csr_matrix`` already resident on the device.
+
+    Returns
+    -------
+    Any
+        The product as a CuPy array, matching ``cp_lhs``'s dimensionality.
+    """
+    import cupy as cp  # ty: ignore[unresolved-import]
+    import nvmath  # ty: ignore[unresolved-import]
+
+    lhs_2d = cp_lhs[None, :] if cp_lhs.ndim == 1 else cp_lhs
+    qualifiers = np.zeros(3, dtype=nvmath.sparse.matmul_matrix_qualifiers_dtype)
+    qualifiers[0]["is_transpose"] = 1
+    out_dtype = cp.result_type(cp_mat.dtype, cp_lhs.dtype)
+    out = cp.zeros((cp_mat.shape[1], lhs_2d.shape[0]), dtype=out_dtype)
+    res = nvmath.sparse.matmul(
+        cp_mat, cp.asfortranarray(lhs_2d.T), out, qualifiers=qualifiers
+    ).T
+    return res.ravel() if cp_lhs.ndim == 1 else res
+
+
+def _matmul_cupy(cp_mat: Any, rhs: np.ndarray, is_sparse: bool) -> np.ndarray:
     """Compute ``cp_mat @ rhs`` on the CuPy backend.
 
     Parameters
@@ -487,6 +558,10 @@ def _matmul_cupy(cp_mat: Any, rhs: np.ndarray) -> np.ndarray:
         returned by :func:`_to_cupy_matrix`.
     rhs : np.ndarray
         The right-hand operand.
+    is_sparse : bool
+        Whether ``cp_mat`` is a sparse CSR matrix, in which case the product
+        is routed through nvmath-python (see :func:`_sparse_matmul_nvmath`)
+        instead of cuSPARSE's int64-unsafe legacy routines.
 
     Returns
     -------
@@ -496,11 +571,14 @@ def _matmul_cupy(cp_mat: Any, rhs: np.ndarray) -> np.ndarray:
     import cupy as cp  # ty: ignore[unresolved-import]
 
     cp_rhs = cp.asarray(rhs)
-    cp_res = cp_mat @ cp_rhs
+    if is_sparse:
+        cp_res = _sparse_matmul_nvmath(cp_mat, cp_rhs)
+    else:
+        cp_res = cp_mat @ cp_rhs
     return cp.asnumpy(cp_res)
 
 
-def _rmatmul_cupy(lhs: np.ndarray, cp_mat: Any) -> np.ndarray:
+def _rmatmul_cupy(lhs: np.ndarray, cp_mat: Any, is_sparse: bool) -> np.ndarray:
     """Compute ``lhs @ cp_mat`` on the CuPy backend.
 
     Parameters
@@ -510,6 +588,10 @@ def _rmatmul_cupy(lhs: np.ndarray, cp_mat: Any) -> np.ndarray:
     cp_mat : Any
         The right-hand matrix already resident on the CuPy device, as
         returned by :func:`_to_cupy_matrix`.
+    is_sparse : bool
+        Whether ``cp_mat`` is a sparse CSR matrix, in which case the product
+        is routed through nvmath-python (see :func:`_sparse_rmatmul_nvmath`)
+        instead of cuSPARSE's int64-unsafe legacy routines.
 
     Returns
     -------
@@ -519,7 +601,10 @@ def _rmatmul_cupy(lhs: np.ndarray, cp_mat: Any) -> np.ndarray:
     import cupy as cp  # ty: ignore[unresolved-import]
 
     cp_lhs = cp.asarray(lhs)
-    cp_res = cp_lhs @ cp_mat
+    if is_sparse:
+        cp_res = _sparse_rmatmul_nvmath(cp_lhs, cp_mat)
+    else:
+        cp_res = cp_lhs @ cp_mat
     return cp.asnumpy(cp_res)
 
 
@@ -597,7 +682,7 @@ class GPUMatrix:
         if self.is_custom:
             return self.device_mat @ rhs
         if self.backend == "cupy":
-            return _matmul_cupy(self.device_mat, rhs)
+            return _matmul_cupy(self.device_mat, rhs, is_sparse=self.is_sparse)
         elif self.backend == "mlx":
             return _matmul_mlx(
                 self.device_mat, rhs, is_sparse=self.is_sparse, shape=self.shape
@@ -620,7 +705,7 @@ class GPUMatrix:
         if self.is_custom:
             return lhs @ self.device_mat
         if self.backend == "cupy":
-            return _rmatmul_cupy(lhs, self.device_mat)
+            return _rmatmul_cupy(lhs, self.device_mat, is_sparse=self.is_sparse)
         elif self.backend == "mlx":
             return _rmatmul_mlx(
                 lhs, self.device_mat, is_sparse=self.is_sparse, shape=self.shape

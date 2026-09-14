@@ -3,6 +3,7 @@
 import sys
 import types
 
+import numpy as np
 import pytest
 
 from parafac2 import backend as backend_mod
@@ -148,6 +149,114 @@ def test_capacity_check_does_not_reinstall_the_pool(monkeypatch):
     monkeypatch.setitem(sys.modules, "cupy", fake_cupy)
     assert _ensure_device_capacity(10_000) is True
     assert fake_cupy.cuda.set_allocator.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Sparse matmul/rmatmul dispatch (nvmath-python vs. plain cuSPARSE `@`)
+# ---------------------------------------------------------------------------
+
+
+class _FakeCupyArray:
+    """Minimal stand-in that behaves like a CuPy array for dispatch tests."""
+
+    def __init__(self, arr: object) -> None:
+        self._arr = arr
+
+    def __matmul__(self, other):
+        raise AssertionError(
+            "cuSPARSE's `@` must not be used for a sparse operand: it "
+            "silently corrupts results once indices are int64."
+        )
+
+
+def _fake_cupy_module():
+    fake = types.ModuleType("cupy")
+    fake.asarray = lambda x: x  # ty: ignore[unresolved-attribute]
+    fake.asnumpy = lambda x: x  # ty: ignore[unresolved-attribute]
+    fake.result_type = np.result_type  # ty: ignore[unresolved-attribute]
+    fake.zeros = np.zeros  # ty: ignore[unresolved-attribute]
+    fake.asfortranarray = lambda x: x  # ty: ignore[unresolved-attribute]
+    return fake
+
+
+def _fake_nvmath_module(calls: list):
+    fake = types.ModuleType("nvmath")
+    sparse_ns = types.SimpleNamespace(
+        matmul_matrix_qualifiers_dtype=[
+            ("is_transpose", "<i4"),
+            ("is_conjugate", "<i4"),
+        ],
+    )
+
+    def _matmul(a, b, c, qualifiers=None):
+        calls.append((a, b, c, qualifiers))
+        return c
+
+    sparse_ns.matmul = _matmul
+    fake.sparse = sparse_ns  # ty: ignore[unresolved-attribute]
+    return fake
+
+
+def test_sparse_matmul_on_cupy_routes_through_nvmath_not_cusparse_at(monkeypatch):
+    """A sparse `cp_mat @ rhs` must go through nvmath, never CuPy's own `@`.
+
+    cuSPARSE's legacy `csrmm2` (what CuPy's `@` uses for CSR-by-dense) hands
+    the raw index-buffer pointers to an int32-only API with no dtype check,
+    so it silently corrupts results once a matrix has int64 indices.
+    nvmath-python's SpMM binding is told the real index type instead.
+    """
+    calls = []
+    monkeypatch.setitem(sys.modules, "cupy", _fake_cupy_module())
+    monkeypatch.setitem(sys.modules, "nvmath", _fake_nvmath_module(calls))
+
+    class _FakeSparse(_FakeCupyArray):
+        dtype = np.float32
+        shape = (4, 3)
+
+    rhs = np.ones((3, 2), dtype=np.float32)
+    result = backend_mod._matmul_cupy(_FakeSparse(None), rhs, is_sparse=True)
+
+    assert len(calls) == 1
+    _a, b, c, qualifiers = calls[0]
+    assert b is rhs
+    assert c.shape == (4, 2)
+    assert qualifiers is None
+    assert result.shape == (4, 2)
+
+
+def test_sparse_rmatmul_on_cupy_routes_through_nvmath_with_transpose(monkeypatch):
+    calls = []
+    monkeypatch.setitem(sys.modules, "cupy", _fake_cupy_module())
+    monkeypatch.setitem(sys.modules, "nvmath", _fake_nvmath_module(calls))
+
+    class _FakeSparse(_FakeCupyArray):
+        dtype = np.float32
+        shape = (4, 3)
+
+    lhs = np.ones((2, 4), dtype=np.float32)
+    result = backend_mod._rmatmul_cupy(lhs, _FakeSparse(None), is_sparse=True)
+
+    assert len(calls) == 1
+    _a, _b, c, qualifiers = calls[0]
+    assert c.shape == (3, 2)  # (N, K): transposed, undone by the caller
+    assert qualifiers[0]["is_transpose"] == 1
+    assert result.shape == (2, 3)
+
+
+def test_dense_matmul_on_cupy_still_uses_plain_at(monkeypatch):
+    """Dense products are unaffected: cuBLAS has no int32 index limitation."""
+    monkeypatch.setitem(sys.modules, "cupy", _fake_cupy_module())
+
+    class _FakeDense:
+        dtype = np.float32
+        shape = (4, 3)
+
+        def __matmul__(self, other):
+            return other
+
+    rhs = np.ones((3, 2), dtype=np.float32)
+    result = backend_mod._matmul_cupy(_FakeDense(), rhs, is_sparse=False)
+    assert result is rhs
 
 
 def _fake_cupy(free: int, total: int, managed: bool = True):
