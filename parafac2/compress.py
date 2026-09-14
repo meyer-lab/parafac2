@@ -173,8 +173,8 @@ def compress_cells(
             # Thin SVD of (n_k, L_g) where L_g <= 100
             U_i, S_i, Vh_i = np.linalg.svd(X_c_i, full_matrices=False)
             L_k = min(n_k, L_c)
-            Q_i = U_i[:, :L_k].astype(np.float64)
-            Y_i = (S_i[:L_k, np.newaxis] * Vh_i[:L_k, :]).astype(np.float64)
+            Q_i = U_i[:, :L_k].astype(np.float32)
+            Y_i = (S_i[:L_k, np.newaxis] * Vh_i[:L_k, :]).astype(np.float32)
             cores.append(Y_i)
             if Q_k_list is not None:
                 Q_k_list.append(Q_i)
@@ -339,11 +339,11 @@ def project_data_compressed(
     norm_sq_err = norm_tensor + float(((A.T @ A) * (B.T @ B) * (C_L.T @ C_L)).sum())
 
     if mode == 0:
-        mttkrp = np.zeros((n_cond, rank), dtype=np.float64)
+        mttkrp = np.zeros((n_cond, rank), dtype=np.float32)
     elif mode == 1:
-        mttkrp = np.zeros((rank, rank), dtype=np.float64)
+        mttkrp = np.zeros((rank, rank), dtype=np.float32)
     else:
-        mttkrp = np.zeros_like(C_L, dtype=np.float64)
+        mttkrp = np.zeros_like(C_L, dtype=np.float32)
 
     proj_list = []
     for i in range(n_cond):
@@ -389,10 +389,10 @@ def init_compressed_factors(
     # SVD of stacked cores to initialize C_L
     Y_stacked = np.concatenate(cores, axis=0)
     _, _, vh = np.linalg.svd(Y_stacked, full_matrices=False)
-    C_L = vh[:rank, :].T.astype(np.float64)
+    C_L = vh[:rank, :].T.astype(np.float32)
 
     return [
-        np.ones((n_cond, rank), dtype=np.float64),
-        np.eye(rank, dtype=np.float64),
+        np.ones((n_cond, rank), dtype=np.float32),
+        np.eye(rank, dtype=np.float32),
         C_L,
     ]
