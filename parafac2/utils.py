@@ -561,24 +561,26 @@ def randomized_svd_right(
     )
     l_dim = min(n_genes, n_cells, n_components + n_oversamples)
 
+    X_dtype = matrix_dtype(X)
+
     Omega = rng.normal(size=(n_genes, l_dim)).astype(np.float64)
-    Y = np.asarray(matmul(X, Omega), dtype=np.float64)
+    Y = np.asarray(matmul(X, Omega.astype(X_dtype)), dtype=np.float64)
     if means is not None:
         Y -= means @ Omega
 
     for _ in range(n_power_iter):
         Q, _ = np.linalg.qr(Y, mode="reduced")
-        Z_T = np.asarray(rmatmul(Q.T, X), dtype=np.float64)
+        Z_T = np.asarray(rmatmul(Q.T.astype(X_dtype), X), dtype=np.float64)
         if means is not None:
             Z_T -= np.outer(np.sum(Q.T, axis=1), means)
         Z = Z_T.T
         Q_z, _ = np.linalg.qr(Z, mode="reduced")
-        Y = np.asarray(matmul(X, Q_z), dtype=np.float64)
+        Y = np.asarray(matmul(X, Q_z.astype(X_dtype)), dtype=np.float64)
         if means is not None:
             Y -= means @ Q_z
 
     Q, _ = np.linalg.qr(Y, mode="reduced")
-    B = np.asarray(rmatmul(Q.T, X), dtype=np.float64)
+    B = np.asarray(rmatmul(Q.T.astype(X_dtype), X), dtype=np.float64)
     if means is not None:
         B -= np.outer(np.sum(Q.T, axis=1), means)
 
