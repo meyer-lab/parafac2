@@ -247,6 +247,21 @@ def test_randomized_svd_right_recovers_the_dominant_subspace():
     assert scipy.linalg.subspace_angles(Q, truth).max() < 1e-4
 
 
+def test_randomized_svd_right_is_orthonormal_on_a_rank_deficient_matrix():
+    """A rank-1 matrix leaves every requested direction beyond the first
+    arbitrary, which is where the interpolative decomposition's own output
+    stops being dependable (it varies by LAPACK build, and a non-orthonormal
+    C propagates into a projection whose SVD then fails to converge). The
+    returned basis must be orthonormal regardless."""
+    Q = randomized_svd_right(
+        DenseMatrix(np.ones((10, 5))), n_components=2, n_oversamples=10
+    )
+
+    assert Q.shape == (5, 2)
+    assert np.all(np.isfinite(Q))
+    np.testing.assert_allclose(Q.T @ Q, np.eye(2), atol=1e-10)
+
+
 def test_randomized_svd_right_handles_a_matrix_with_no_signal():
     """An all-zero matrix has no dominant subspace to find; the ID's pivoting
     divides by zero there, so the fallback must still return the requested

@@ -373,12 +373,20 @@ def _id_right_vectors(
 ) -> np.ndarray:
     """Right-singular vectors of ``op`` from an interpolative decomposition.
 
-    Falls back to the leading identity columns when there is nothing to
-    decompose: a (numerically) all-zero matrix leaves the decomposition's
-    column-norm pivoting dividing by zero, and SciPy then either returns
-    non-finite vectors or fails outright on them. Any orthonormal basis spans
-    such a matrix's row space equally well, and the LOBPCG refinement starts
-    from it just the same.
+    Two things about the decomposition's output are not safe to take on faith
+    once the matrix is rank-deficient, because the directions belonging to
+    zero singular values are arbitrary and the column-norm pivoting that
+    would choose them is dividing by zero:
+
+    * it can come back non-finite, or fail outright on its own intermediate
+      result, when there is nothing at all to decompose (an all-zero matrix,
+      or one that is zero once centered). The leading identity columns then
+      span the row space as well as anything else, and the LOBPCG refinement
+      starts from them just the same.
+    * the vectors are orthonormal in exact arithmetic, but those arbitrary
+      directions are not reliably so in practice -- it varies by LAPACK
+      build. A QR pins them down without changing the subspace, and this
+      function's whole contract is to return an orthonormal basis.
     """
     k = min(*op.shape, n_components + n_oversamples)
     try:
@@ -388,7 +396,9 @@ def _id_right_vectors(
 
     if V is None or not np.all(np.isfinite(V)):
         return np.eye(op.shape[1], n_components, dtype=np.float64)
-    return np.ascontiguousarray(V, dtype=np.float64)
+
+    Q, _ = np.linalg.qr(np.ascontiguousarray(V, dtype=np.float64))
+    return Q
 
 
 def randomized_svd_right(
@@ -462,7 +472,13 @@ def randomized_svd_right(
             # A fixed iteration budget is the point here, so LOBPCG stopping
             # short of its tolerance is expected rather than noteworthy.
             warnings.simplefilter("ignore", UserWarning)
-            _eigenvalues, V = lobpcg(op.H @ op, V, largest=True, maxiter=n_power_iter)
+            _eigenvalues, refined = lobpcg(
+                op.H @ op, V, largest=True, maxiter=n_power_iter
+            )
+        # LOBPCG can break down on a degenerate Gram operator; its starting
+        # point is a valid answer, just a less refined one.
+        if np.all(np.isfinite(refined)):
+            V = refined
 
     return np.ascontiguousarray(V, dtype=np.float64)
 
