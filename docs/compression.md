@@ -96,10 +96,12 @@ When `compress="auto"` (or `compress=True`), `parafac2_nd` automatically sets th
 
 $$
 \begin{aligned}
-L_g &= \min(n_{\text{genes}}, \max(4 \cdot \text{rank}, \text{rank} + 20)) \\
-L_c &= \max(4 \cdot \text{rank}, \text{rank} + 20)
+L_g &= \min(n_{\text{genes}}, \max(2 \cdot \text{rank}, \text{rank} + 20)) \\
+L_c &= \max(2 \cdot \text{rank}, \text{rank} + 20)
 \end{aligned}
 $$
+
+The $2\times$ multiplier is a cost/accuracy trade-off measured against uncompressed converged fits: at rank 30 on two single-cell datasets, going from $2\times$ to $4\times$ recovers a further 0.01–0.06 percentage points of R2X (99.86% → 99.87% and 99.81% → 99.87% of the uncompressed fit) for roughly twice the compression time. Pass an explicit `L` when a particular dataset warrants more.
 
 ```python
 # One-step factorization with automatic compression

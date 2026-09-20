@@ -13,6 +13,26 @@ from ..parafac2 import parafac2_nd, store_pf2
 from .test_parafac2 import pf2_to_anndata
 
 
+@pytest.mark.parametrize(
+    ("rank", "expected_L"),
+    [(3, 23), (10, 30), (30, 60), (100, 200)],
+)
+def test_auto_compression_dimensions(rank, expected_L):
+    """`L="auto"` takes max(2*rank, rank+20) in both modes.
+
+    The multiplier is a measured cost/accuracy trade-off (see the comment on
+    the rule itself), so pin it rather than let it drift silently.
+    """
+    shapes = [(250, 300) for _ in range(4)]
+    rng = np.random.default_rng(0)
+    X_ann = pf2_to_anndata([rng.normal(size=s) for s in shapes], sparse=False)
+
+    compressed = compress_dataset(X_ann, L="auto", rank=rank, random_state=0)
+
+    assert compressed.L_g == expected_L
+    assert compressed.max_cell_dim == expected_L
+
+
 @pytest.mark.parametrize("compress_mode", ["auto", 15, (20, 15), (20, None)])
 def test_parafac2_compressed_exact_recovery(compress_mode):
     """Test that compressed PARAFAC2 recovers noise-free synthetic data."""
