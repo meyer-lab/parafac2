@@ -157,3 +157,82 @@ def test_compressed_rank_too_large():
 
     with pytest.raises(ValueError, match="cannot exceed gene compression dimension"):
         parafac2_nd(X_ann, rank=10, compress=(5, 5))
+
+
+@pytest.mark.parametrize("compress_mode", ["auto", 15, (20, None)])
+def test_compressed_fix_B_identity(compress_mode):
+    """fix_B_identity=True must also hold on the compressed fitting path."""
+    shapes = [(30, 40) for _ in range(5)]
+    rank = 3
+    rng = np.random.default_rng(42)
+
+    X_list = [rng.normal(size=s) for s in shapes]
+    X_ann = pf2_to_anndata(X_list, sparse=False)
+
+    (_w, f, p), r2x = parafac2_nd(
+        X_ann,
+        rank=rank,
+        random_state=42,
+        n_iter_max=80,
+        tol=1e-8,
+        compress=compress_mode,
+        fix_B_identity=True,
+    )
+
+    np.testing.assert_array_equal(f[1], np.eye(rank))
+    assert 0.0 <= r2x <= 1.0
+    for P_k in p:
+        np.testing.assert_allclose(P_k.T @ P_k, np.eye(rank), atol=1e-5)
+
+
+def test_compressed_fix_B_identity_recovers_identity_B_data():
+    """A compressed fit with B pinned should recover data built with B = I."""
+    shapes = [(30, 40) for _ in range(5)]
+    rank = 3
+    rng = np.random.default_rng(7)
+
+    A = rng.uniform(0.5, 1.5, size=(len(shapes), rank))
+    C = rng.normal(size=(shapes[0][1], rank))
+    projections = [np.linalg.qr(rng.normal(size=(Ik, rank)))[0] for Ik, _ in shapes]
+
+    X_slices = parafac2_to_slices((None, [A, np.eye(rank), C], projections))
+    X_ann = pf2_to_anndata(X_slices, sparse=False)
+
+    # A pre-compressed object exercises the CompressedData entry point too.
+    compressed = compress_dataset(X_ann, L=20, random_state=7)
+    (_w, f, _p), r2x = parafac2_nd(
+        compressed,
+        rank=rank,
+        random_state=7,
+        n_iter_max=200,
+        tol=1e-10,
+        fix_B_identity=True,
+    )
+
+    np.testing.assert_array_equal(f[1], np.eye(rank))
+    assert r2x > 0.99
+
+
+def test_compressed_fix_B_identity_monotonic():
+    """Skipping the B solve must not break monotone convergence when compressed."""
+    shapes = [(30, 40) for _ in range(4)]
+    rank = 3
+    rng = np.random.default_rng(5)
+
+    X_ann = pf2_to_anndata([rng.normal(size=s) for s in shapes], sparse=False)
+
+    errors: list[float] = []
+    parafac2_nd(
+        X_ann,
+        rank=rank,
+        random_state=5,
+        n_iter_max=60,
+        tol=1e-12,
+        compress=20,
+        fix_B_identity=True,
+        callback=lambda _i, e, _f: errors.append(e),
+    )
+
+    assert len(errors) > 1
+    for i in range(1, len(errors)):
+        assert errors[i] - errors[i - 1] <= 1e-9, f"error rose at sweep {i}"
