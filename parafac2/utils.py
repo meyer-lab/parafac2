@@ -34,7 +34,6 @@ import warnings
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
-from scipy.linalg import interpolative
 from scipy.optimize import linear_sum_assignment
 from scipy.sparse.linalg import LinearOperator, lobpcg
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
@@ -43,6 +42,9 @@ from .matrix import as_linear_operator, as_matrix
 
 if TYPE_CHECKING:
     import anndata
+
+_GRAM_BLOCK = 64
+"""Columns of ``X^T X`` formed per pass in :func:`_exact_right_vectors`."""
 
 
 def condition_slices(
@@ -365,40 +367,27 @@ def standardize_pf2(
     return weights, factors, projections
 
 
-def _id_right_vectors(
-    op: LinearOperator,
-    n_components: int,
-    n_oversamples: int,
-    rng: np.random.Generator,
-) -> np.ndarray:
-    """Right-singular vectors of ``op`` from an interpolative decomposition.
+def _exact_right_vectors(op: LinearOperator, n_components: int) -> np.ndarray:
+    """Top right-singular vectors of ``op`` from its exact Gram matrix.
 
-    Two things about the decomposition's output are not safe to take on faith
-    once the matrix is rank-deficient, because the directions belonging to
-    zero singular values are arbitrary and the column-norm pivoting that
-    would choose them is dividing by zero:
-
-    * it can come back non-finite, or fail outright on its own intermediate
-      result, when there is nothing at all to decompose (an all-zero matrix,
-      or one that is zero once centered). The leading identity columns then
-      span the row space as well as anything else, and the LOBPCG refinement
-      starts from them just the same.
-    * the vectors are orthonormal in exact arithmetic, but those arbitrary
-      directions are not reliably so in practice -- it varies by LAPACK
-      build. A QR pins them down without changing the subspace, and this
-      function's whole contract is to return an orthonormal basis.
+    For a matrix narrow enough that LOBPCG's block would be a large fraction
+    of it, iterating is neither necessary nor possible (see
+    :func:`randomized_svd_right`), and ``X^T X`` is small enough to
+    diagonalize outright. It is accumulated one column block at a time, so
+    what is held is ``(n_cells, block)`` rather than a densified ``X``, and
+    the answer is exact rather than approximate.
     """
-    k = min(*op.shape, n_components + n_oversamples)
-    try:
-        V = interpolative.svd(op, k, rng=rng)[2][:, :n_components]
-    except (ValueError, np.linalg.LinAlgError):
-        V = None
+    n_genes = op.shape[1]
+    block = max(1, min(n_genes, _GRAM_BLOCK))
+    eye = np.eye(n_genes, dtype=np.float64)
 
-    if V is None or not np.all(np.isfinite(V)):
-        return np.eye(op.shape[1], n_components, dtype=np.float64)
+    gram = np.empty((n_genes, n_genes), dtype=np.float64)
+    for start in range(0, n_genes, block):
+        cols = eye[:, start : start + block]
+        gram[:, start : start + block] = op.rmatmat(op.matmat(cols))
 
-    Q, _ = np.linalg.qr(np.ascontiguousarray(V, dtype=np.float64))
-    return Q
+    _eigenvalues, vecs = np.linalg.eigh((gram + gram.T) / 2.0)
+    return np.ascontiguousarray(vecs[:, ::-1][:, :n_components], dtype=np.float64)
 
 
 def randomized_svd_right(
@@ -411,15 +400,22 @@ def randomized_svd_right(
     """Compute the top right-singular vectors of the mean-centered matrix ``(X - 1 mu^T)``.
 
     The data is wrapped as a linear operator
-    (:func:`~parafac2.matrix.as_linear_operator`) and handed to SciPy:
-    :func:`scipy.linalg.interpolative.svd` computes a randomized rank-``k``
-    SVD through an interpolative decomposition, and
-    :func:`scipy.sparse.linalg.lobpcg` then refines the resulting subspace
-    against the Gram operator ``X^T X``, whose top eigenvectors are exactly
-    the right-singular vectors being sought. LOBPCG applies the operator to
-    the whole block at once, so each refinement iteration costs one pass over
-    the data in each direction -- the same budget as a power iteration, but
-    with a Rayleigh-Ritz step and a conjugate search direction on top.
+    (:func:`~parafac2.matrix.as_linear_operator`) and handed to
+    :func:`scipy.sparse.linalg.lobpcg`, which is run against the Gram
+    operator ``X^T X`` -- whose top eigenvectors are exactly the
+    right-singular vectors being sought -- from a random orthonormal start.
+    LOBPCG applies the operator to the whole block at once, so an iteration
+    costs one pass over the data in each direction, the same as a power
+    iteration, with a Rayleigh-Ritz step and a conjugate search direction on
+    top. Its Rayleigh-Ritz step is also why the starting subspace barely
+    matters: warm-starting it from a randomized decomposition was measured to
+    reach the same answer as a random start at the same iteration count,
+    while costing the decomposition on top.
+
+    Below ``5 * n_components`` columns LOBPCG cannot run (it would fall back
+    to densifying the operator, which for a data matrix is the one thing this
+    may not do), so that case is solved exactly instead, via
+    :func:`_exact_right_vectors`.
 
     Parameters
     ----------
@@ -429,14 +425,16 @@ def randomized_svd_right(
     n_components : int
         Number of right-singular vectors to return.
     n_oversamples : int, default 0
-        Extra columns to ask the interpolative decomposition for before
-        truncating to ``n_components``.
+        Extra directions to carry through the refinement before truncating
+        to ``n_components``. A wider block costs proportionally more per
+        iteration and is rarely worth it here.
     n_power_iter : int, default 20
-        Maximum number of LOBPCG refinement iterations; it stops early once
-        the subspace has converged. ``0`` returns the interpolative
-        decomposition's vectors unrefined.
+        Maximum number of LOBPCG iterations; it stops early once the subspace
+        has converged. Must be at least 1: unlike a randomized decomposition,
+        the starting subspace here carries no information of its own, so
+        there is no meaningful zero-iteration answer.
     random_state : int | np.random.Generator | None, default None
-        Random seed or NumPy generator.
+        Random seed or NumPy generator for the starting subspace.
 
     Returns
     -------
@@ -448,7 +446,7 @@ def randomized_svd_right(
     ValueError
         If ``n_components`` exceeds ``min(n_cells, n_genes)``, the maximum
         possible rank of ``X``, and therefore the most orthonormal columns
-        its row space can supply.
+        its row space can supply, or if ``n_power_iter`` is below 1.
     """
     n_cells, n_genes = X.shape
     max_components = min(n_cells, n_genes)
@@ -458,29 +456,32 @@ def randomized_svd_right(
             f"possible rank of a {n_cells}x{n_genes} matrix "
             f"({max_components})."
         )
+    if n_power_iter < 1:
+        raise ValueError(
+            f"n_power_iter ({n_power_iter}) must be at least 1; the starting "
+            "subspace is random, so no iterations means no answer."
+        )
 
     op = as_linear_operator(X)
+    block_size = min(max_components, n_components + n_oversamples)
+    if n_genes < 5 * block_size:
+        return _exact_right_vectors(op, n_components)
+
     rng = np.random.default_rng(random_state)
-    V = _id_right_vectors(op, n_components, n_oversamples, rng)
+    start, _ = np.linalg.qr(rng.normal(size=(n_genes, block_size)))
 
-    # LOBPCG needs a problem comfortably larger than its block size; below
-    # that it falls back to densifying the operator, which for a data matrix
-    # is exactly what none of this is allowed to do. The subspace is then
-    # already most of the row space anyway, so the ID's vectors stand.
-    if n_power_iter > 0 and n_genes >= 5 * n_components:
-        with warnings.catch_warnings():
-            # A fixed iteration budget is the point here, so LOBPCG stopping
-            # short of its tolerance is expected rather than noteworthy.
-            warnings.simplefilter("ignore", UserWarning)
-            _eigenvalues, refined = lobpcg(
-                op.H @ op, V, largest=True, maxiter=n_power_iter
-            )
-        # LOBPCG can break down on a degenerate Gram operator; its starting
-        # point is a valid answer, just a less refined one.
-        if np.all(np.isfinite(refined)):
-            V = refined
+    with warnings.catch_warnings():
+        # A fixed iteration budget is the point here, so LOBPCG stopping
+        # short of its tolerance is expected rather than noteworthy.
+        warnings.simplefilter("ignore", UserWarning)
+        _eigenvalues, V = lobpcg(op.H @ op, start, largest=True, maxiter=n_power_iter)
 
-    return np.ascontiguousarray(V, dtype=np.float64)
+    # LOBPCG can break down on a degenerate Gram operator (a matrix with no
+    # signal at all, say); the orthonormal starting block is then as good an
+    # answer as any, and is at least a valid one.
+    if not np.all(np.isfinite(V)):
+        V = start
+    return np.ascontiguousarray(V[:, :n_components], dtype=np.float64)
 
 
 def extract_dataset_info(

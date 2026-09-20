@@ -262,6 +262,15 @@ def test_randomized_svd_right_is_orthonormal_on_a_rank_deficient_matrix():
     np.testing.assert_allclose(Q.T @ Q, np.eye(2), atol=1e-10)
 
 
+def test_randomized_svd_right_rejects_a_zero_iteration_budget():
+    """The starting subspace is random, so zero iterations has no meaningful
+    answer -- say so rather than return noise."""
+    with pytest.raises(ValueError, match="must be at least 1"):
+        randomized_svd_right(
+            DenseMatrix(np.ones((10, 5))), n_components=2, n_power_iter=0
+        )
+
+
 def test_randomized_svd_right_handles_a_matrix_with_no_signal():
     """An all-zero matrix has no dominant subspace to find; the ID's pivoting
     divides by zero there, so the fallback must still return the requested
