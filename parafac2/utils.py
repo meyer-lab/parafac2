@@ -2,7 +2,8 @@
 Low-level numerical routines supporting the PARAFAC2 fit.
 
 Provides the per-condition projection step, the per-mode ALS factor update
-(which forms its own MTTKRP), the randomized SVD used for initialization,
+(which forms its own MTTKRP), the randomized SVD used for initialization and
+gene compression (SciPy's, driven through a linear operator over the data),
 and post-fit standardization of the factors and projections.
 
 The fit touches the raw data through exactly two products, which together
@@ -29,13 +30,16 @@ threaded through these routines.
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
+from scipy.linalg import interpolative
 from scipy.optimize import linear_sum_assignment
+from scipy.sparse.linalg import LinearOperator, lobpcg
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 
-from .matrix import as_matrix
+from .matrix import as_linear_operator, as_matrix
 
 if TYPE_CHECKING:
     import anndata
@@ -361,14 +365,51 @@ def standardize_pf2(
     return weights, factors, projections
 
 
+def _id_right_vectors(
+    op: LinearOperator,
+    n_components: int,
+    n_oversamples: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Right-singular vectors of ``op`` from an interpolative decomposition.
+
+    Falls back to the leading identity columns when there is nothing to
+    decompose: a (numerically) all-zero matrix leaves the decomposition's
+    column-norm pivoting dividing by zero, and SciPy then either returns
+    non-finite vectors or fails outright on them. Any orthonormal basis spans
+    such a matrix's row space equally well, and the LOBPCG refinement starts
+    from it just the same.
+    """
+    k = min(*op.shape, n_components + n_oversamples)
+    try:
+        V = interpolative.svd(op, k, rng=rng)[2][:, :n_components]
+    except (ValueError, np.linalg.LinAlgError):
+        V = None
+
+    if V is None or not np.all(np.isfinite(V)):
+        return np.eye(op.shape[1], n_components, dtype=np.float64)
+    return np.ascontiguousarray(V, dtype=np.float64)
+
+
 def randomized_svd_right(
     X: Any,
     n_components: int,
     n_oversamples: int = 0,
-    n_power_iter: int = 2,
+    n_power_iter: int = 20,
     random_state: int | np.random.Generator | None = None,
 ) -> np.ndarray:
     """Compute the top right-singular vectors of the mean-centered matrix ``(X - 1 mu^T)``.
+
+    The data is wrapped as a linear operator
+    (:func:`~parafac2.matrix.as_linear_operator`) and handed to SciPy:
+    :func:`scipy.linalg.interpolative.svd` computes a randomized rank-``k``
+    SVD through an interpolative decomposition, and
+    :func:`scipy.sparse.linalg.lobpcg` then refines the resulting subspace
+    against the Gram operator ``X^T X``, whose top eigenvectors are exactly
+    the right-singular vectors being sought. LOBPCG applies the operator to
+    the whole block at once, so each refinement iteration costs one pass over
+    the data in each direction -- the same budget as a power iteration, but
+    with a Rayleigh-Ritz step and a conjugate search direction on top.
 
     Parameters
     ----------
@@ -378,9 +419,12 @@ def randomized_svd_right(
     n_components : int
         Number of right-singular vectors to return.
     n_oversamples : int, default 0
-        Additional random test vectors for randomized SVD projection.
-    n_power_iter : int, default 2
-        Number of power iterations for subspace refinement.
+        Extra columns to ask the interpolative decomposition for before
+        truncating to ``n_components``.
+    n_power_iter : int, default 20
+        Maximum number of LOBPCG refinement iterations; it stops early once
+        the subspace has converged. ``0`` returns the interpolative
+        decomposition's vectors unrefined.
     random_state : int | np.random.Generator | None, default None
         Random seed or NumPy generator.
 
@@ -393,11 +437,8 @@ def randomized_svd_right(
     ------
     ValueError
         If ``n_components`` exceeds ``min(n_cells, n_genes)``, the maximum
-        possible rank of ``X``. The random test matrix ``Y = X @ Omega`` has
-        only ``n_cells`` rows, so its column-space rank is capped at
-        ``n_cells`` no matter how wide ``Omega`` is; without this check, a
-        too-large request would silently come back with fewer columns than
-        asked for instead of erroring.
+        possible rank of ``X``, and therefore the most orthonormal columns
+        its row space can supply.
     """
     n_cells, n_genes = X.shape
     max_components = min(n_cells, n_genes)
@@ -408,27 +449,22 @@ def randomized_svd_right(
             f"({max_components})."
         )
 
-    rng = (
-        random_state
-        if isinstance(random_state, np.random.Generator)
-        else np.random.default_rng(random_state)
-    )
-    l_dim = min(n_genes, n_cells, n_components + n_oversamples)
+    op = as_linear_operator(X)
+    rng = np.random.default_rng(random_state)
+    V = _id_right_vectors(op, n_components, n_oversamples, rng)
 
-    Omega = rng.normal(size=(n_genes, l_dim)).astype(np.float64)
-    Y = np.asarray(X @ Omega, dtype=np.float64)
+    # LOBPCG needs a problem comfortably larger than its block size; below
+    # that it falls back to densifying the operator, which for a data matrix
+    # is exactly what none of this is allowed to do. The subspace is then
+    # already most of the row space anyway, so the ID's vectors stand.
+    if n_power_iter > 0 and n_genes >= 5 * n_components:
+        with warnings.catch_warnings():
+            # A fixed iteration budget is the point here, so LOBPCG stopping
+            # short of its tolerance is expected rather than noteworthy.
+            warnings.simplefilter("ignore", UserWarning)
+            _eigenvalues, V = lobpcg(op.H @ op, V, largest=True, maxiter=n_power_iter)
 
-    for _ in range(n_power_iter):
-        Q, _ = np.linalg.qr(Y, mode="reduced")
-        Z = np.asarray(Q.T @ X, dtype=np.float64).T
-        Q_z, _ = np.linalg.qr(Z, mode="reduced")
-        Y = np.asarray(X @ Q_z, dtype=np.float64)
-
-    Q, _ = np.linalg.qr(Y, mode="reduced")
-    B = np.asarray(Q.T @ X, dtype=np.float64)
-
-    _, _, vh = np.linalg.svd(B, full_matrices=False)
-    return vh[:n_components, :].T.astype(np.float64)
+    return np.ascontiguousarray(V, dtype=np.float64)
 
 
 def extract_dataset_info(

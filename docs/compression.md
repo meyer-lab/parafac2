@@ -18,7 +18,7 @@ where $P_k \in \mathbb{R}^{N_k \times R}$ has orthonormal columns ($P_k^T P_k = 
 
 CANDELINC compression operates in two steps:
 
-1. **Gene Compression ($L_g$)**: Computes an orthonormal gene basis $Q \in \mathbb{R}^{J \times L_g}$ via randomized SVD on the mean-centered data, yielding gene-compressed matrix $X_c = (X - \mathbf{1}\boldsymbol{\mu}^T) Q$.
+1. **Gene Compression ($L_g$)**: Computes an orthonormal gene basis $Q \in \mathbb{R}^{J \times L_g}$ via randomized SVD on the mean-centered data (SciPy's interpolative decomposition, refined with LOBPCG against $X^T X$), yielding gene-compressed matrix $X_c = (X - \mathbf{1}\boldsymbol{\mu}^T) Q$.
 2. **Cell Compression ($L_c$)**: Computes per-condition cell bases $Q_k \in \mathbb{R}^{N_k \times L_{c,k}}$ via thin SVD on each condition slice $X_{c,k}$, yielding small dense core matrices $Y_k \in \mathbb{R}^{L_{c,k} \times L_g}$.
 
 During ALS fitting, factor updates and Matricized Tensor Times Khatri-Rao Products (MTTKRP) operate exclusively on $Y_k$. After convergence:
@@ -292,6 +292,8 @@ The contract is:
 | `slice_norms(condition_idxs, n_cond)` | Per-condition Frobenius norms. |
 | `to_device(backend)` | The same contract with the data on `'cupy'`/`'mlx'`. Only needed for a GPU backend. |
 | `__array_ufunc__ = None` | Required so `lhs @ X` defers to `X.__rmatmul__` rather than NumPy trying to broadcast `X`. |
+
+The randomized SVD needs nothing further: `parafac2.matrix.as_linear_operator` wraps the same contract as a SciPy `LinearOperator`, so the decomposition sees only `matvec`/`matmat` and never learns what the data is or which device it is on.
 
 Mean-centering belongs to the matrix: `X @ C` must already mean `(X - 1 μᵀ) @ C`. The built-in wrappers take a `means` argument and apply it as a rank-1 correction to the (small) product, so a sparse matrix is never densified; a type that centers itself internally simply accounts for it in its own products and norms, and must not also be handed `adata.var["means"]`.
 

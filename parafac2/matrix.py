@@ -36,6 +36,11 @@ An object usable as ``X`` must provide:
     ``ndarray`` (which fails outright for a type that cannot be converted to
     one, as most duck-typed backends cannot).
 
+:func:`as_linear_operator` adapts any of these to a SciPy
+:class:`~scipy.sparse.linalg.LinearOperator`, which is how the data reaches
+SciPy's decompositions (the randomized SVD in :mod:`parafac2.utils`) without
+those ever learning what the data is or where it lives.
+
 :class:`Matrix` implements everything but the two products and the two norms,
 so subclassing it is the easy way to satisfy the contract; ``vsparse``-style
 types that implement it structurally work just as well and are passed through
@@ -49,6 +54,7 @@ from typing import Any
 
 import numpy as np
 from scipy.sparse import csr_array, issparse
+from scipy.sparse.linalg import LinearOperator
 
 from .backend import (
     cupy_csr_matmul,
@@ -378,6 +384,61 @@ def as_matrix(mat: Any, means: np.ndarray | None = None) -> Any:
             "nonzero `means` alongside it is not supported."
         )
     return mat
+
+
+class _MatrixOperator(LinearOperator):
+    """A duck-typed matrix seen as a SciPy linear operator.
+
+    A pure adapter: every product is forwarded to the contract, so this
+    inherits whatever the matrix already does about mean-centering, dtype
+    handling, and -- for a device-resident matrix -- moving the dense
+    multiplicand to wherever the data lives. ``matmat``/``rmatmat`` forward a
+    multi-column operand whole, so a block product costs one pass over the
+    data rather than one pass per column.
+    """
+
+    def __init__(self, X: Any) -> None:
+        # Always float64: that is what the contract's products return, and
+        # what SciPy's decompositions require. The product itself is still
+        # taken in the data's own dtype, so the data is never upcast.
+        super().__init__(np.dtype(np.float64), X.shape)
+        self.X = X
+
+    def _matmat(self, rhs: np.ndarray) -> np.ndarray:
+        return np.asarray(self.X @ rhs, dtype=np.float64)
+
+    def _rmatmat(self, lhs: np.ndarray) -> np.ndarray:
+        return np.asarray(lhs.T @ self.X, dtype=np.float64).T
+
+    def _matvec(self, x: np.ndarray) -> np.ndarray:
+        return np.asarray(self.X @ np.ravel(x), dtype=np.float64)
+
+    def _rmatvec(self, x: np.ndarray) -> np.ndarray:
+        return np.asarray(np.ravel(x) @ self.X, dtype=np.float64)
+
+
+def as_linear_operator(mat: Any, means: np.ndarray | None = None) -> LinearOperator:
+    """Return ``mat`` as a SciPy :class:`~scipy.sparse.linalg.LinearOperator`.
+
+    This is how the data is handed to SciPy's decompositions (see
+    :func:`~parafac2.utils.randomized_svd_right`): anything :func:`as_matrix`
+    accepts becomes an operator without the decomposition ever learning what
+    the data actually is or where it lives.
+
+    Parameters
+    ----------
+    mat : Any
+        Anything :func:`as_matrix` accepts.
+    means : np.ndarray | None, default None
+        Per-column means to center by, as accepted by :func:`as_matrix`.
+
+    Returns
+    -------
+    LinearOperator
+        An ``(n_rows, n_cols)`` float64 operator applying ``X @ rhs`` and
+        ``lhs @ X``.
+    """
+    return _MatrixOperator(as_matrix(mat, means))
 
 
 def to_gpu(

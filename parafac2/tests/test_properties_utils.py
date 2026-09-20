@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import scipy.linalg
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
@@ -223,6 +224,37 @@ def test_randomized_svd_right_raises_instead_of_silently_truncating():
             n_power_iter=2,
             random_state=0,
         )
+
+
+def test_randomized_svd_right_recovers_the_dominant_subspace():
+    """The LOBPCG refinement must land on the true top-k right-singular
+    subspace, not merely somewhere near it. A slowly decaying spectrum is the
+    hard case: a plain power iteration leaves the trailing directions badly
+    mixed, while refining against the Gram operator separates them.
+    """
+    rng = np.random.default_rng(0)
+    n_cells, n_genes, k = 600, 120, 8
+    U, _ = np.linalg.qr(rng.normal(size=(n_cells, n_genes)))
+    V, _ = np.linalg.qr(rng.normal(size=(n_genes, n_genes)))
+    X = (U * np.exp(-np.arange(n_genes) / 30.0)) @ V.T
+
+    Q = randomized_svd_right(DenseMatrix(X), n_components=k, random_state=0)
+    truth = np.linalg.svd(X, full_matrices=False)[2][:k].T
+
+    assert Q.shape == (n_genes, k)
+    np.testing.assert_allclose(Q.T @ Q, np.eye(k), atol=1e-10)
+    # The largest principal angle between the two subspaces.
+    assert scipy.linalg.subspace_angles(Q, truth).max() < 1e-4
+
+
+def test_randomized_svd_right_handles_a_matrix_with_no_signal():
+    """An all-zero matrix has no dominant subspace to find; the ID's pivoting
+    divides by zero there, so the fallback must still return the requested
+    number of orthonormal columns rather than NaNs or a failure."""
+    Q = randomized_svd_right(DenseMatrix(np.zeros((5, 4))), n_components=2)
+
+    assert Q.shape == (4, 2)
+    np.testing.assert_allclose(Q.T @ Q, np.eye(2), atol=1e-12)
 
 
 # ---------------------------------------------------------------------------

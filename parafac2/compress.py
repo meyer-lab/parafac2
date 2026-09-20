@@ -84,7 +84,7 @@ class CompressedData:
 def compress_genes(
     X: Any,
     L_g: int,
-    n_power_iter: int = 2,
+    n_power_iter: int = 20,
     random_state: int | np.random.Generator | None = None,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Compute gene-mode compression projector Q and compressed matrix Xc.
@@ -96,8 +96,9 @@ def compress_genes(
         accounting for any mean-centering (see :mod:`parafac2.matrix`).
     L_g : int
         Target gene subspace dimension.
-    n_power_iter : int, default 2
-        Number of power iterations for randomized SVD.
+    n_power_iter : int, default 20
+        Maximum number of refinement iterations for the randomized SVD
+        (see :func:`~parafac2.utils.randomized_svd_right`).
     random_state : int | np.random.Generator | None, default None
         Random seed or generator.
 
@@ -184,7 +185,7 @@ def compress_dataset(
     X_in: anndata.AnnData,
     L: int | tuple[int, int | None] | str | bool = "auto",
     rank: int | None = None,
-    n_power_iter: int = 2,
+    n_power_iter: int = 20,
     random_state: int | np.random.Generator | None = None,
     normalize_slices: bool = False,
     backend: str | None = None,
@@ -206,8 +207,9 @@ def compress_dataset(
     rank : int | None, default None
         Expected maximum rank to fit on the compressed data. Used when
         ``L="auto"``.
-    n_power_iter : int, default 2
-        Number of power iterations for randomized SVD.
+    n_power_iter : int, default 20
+        Maximum number of refinement iterations for the randomized SVD
+        (see :func:`~parafac2.utils.randomized_svd_right`).
     random_state : int | np.random.Generator | None, default None
         Random seed or generator.
     normalize_slices : bool, default False

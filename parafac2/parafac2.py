@@ -100,7 +100,7 @@ def parafac2_init(
     means: np.ndarray | None = None,
     random_state: int | np.random.Generator | None = None,
     n_oversamples: int = 10,
-    n_iter: int = 2,
+    n_iter: int = 20,
     norm_tensor: float | None = None,
 ) -> tuple[list[np.ndarray], float]:
     """Compute initial factors using randomized SVD.
@@ -127,8 +127,9 @@ def parafac2_init(
     n_oversamples : int, default 10
         Extra dimensions added to ``rank`` when forming the random
         projection, to improve the accuracy of the randomized SVD.
-    n_iter : int, default 2
-        Number of power iterations used to refine the random projection.
+    n_iter : int, default 20
+        Maximum number of LOBPCG refinement iterations applied to the
+        randomized SVD's subspace.
     norm_tensor : float | None, default None
         Precomputed squared Frobenius norm of the mean-centered ``X``. If
         ``None``, it is computed via ``X.norm_sq()``.
