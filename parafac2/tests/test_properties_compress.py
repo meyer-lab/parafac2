@@ -7,6 +7,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from ..compress import compress_cells, compress_genes
+from ..matrix import as_matrix
 from .strategies import condition_groups, dense_matrices, real_arrays
 
 # ---------------------------------------------------------------------------
@@ -31,7 +32,7 @@ def test_compress_genes_q_is_orthonormal(n_genes, has_means, data):
     X = X + np.vstack([np.eye(n_genes), np.zeros((n_cells - n_genes, n_genes))]) * 5.0
     means = data.draw(real_arrays((n_genes,))) if has_means else None
 
-    _X_c, Q, _norm = compress_genes(X, means, L_g=L_g, random_state=0)
+    _X_c, Q, _norm = compress_genes(as_matrix(X, means), L_g=L_g, random_state=0)
 
     assert Q.shape == (n_genes, L_g)
     np.testing.assert_allclose(Q.T @ Q, np.eye(L_g), atol=1e-6)
@@ -52,7 +53,9 @@ def test_compress_genes_is_lossless_when_target_covers_full_rank(n_genes, data):
     X = X + np.vstack([np.eye(n_genes), np.zeros((n_cells - n_genes, n_genes))]) * 5.0
     means = data.draw(real_arrays((n_genes,), min_value=-3.0, max_value=3.0))
 
-    X_c, Q, norm_Xc_sq = compress_genes(X, means, L_g=n_genes, random_state=0)
+    X_c, Q, norm_Xc_sq = compress_genes(
+        as_matrix(X, means), L_g=n_genes, random_state=0
+    )
 
     reconstructed = X_c @ Q.T
     np.testing.assert_allclose(reconstructed, X - means, atol=1e-5, rtol=1e-5)
@@ -70,7 +73,7 @@ def test_compress_genes_cannot_increase_variance(n_cells, n_genes, data):
     means = data.draw(real_arrays((n_genes,)))
     L_g = data.draw(st.integers(1, n_genes))
 
-    _X_c, _Q, norm_Xc_sq = compress_genes(X, means, L_g=L_g, random_state=0)
+    _X_c, _Q, norm_Xc_sq = compress_genes(as_matrix(X, means), L_g=L_g, random_state=0)
 
     assert norm_Xc_sq <= np.sum((X - means) ** 2) + 1e-6
 

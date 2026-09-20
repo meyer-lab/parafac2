@@ -14,7 +14,8 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from scipy.sparse import csr_array
 
-from ..backend import _VALID_BACKENDS, GPUMatrix, device_bytes, get_backend
+from ..backend import _VALID_BACKENDS, csr_device_bytes, get_backend
+from ..matrix import GPUMatrix
 from .strategies import dense_matrix_with_sparsity, real_arrays, to_csr
 
 # ---------------------------------------------------------------------------
@@ -47,14 +48,8 @@ def test_get_backend_rejects_anything_that_is_not_a_known_backend(text):
 
 
 # ---------------------------------------------------------------------------
-# device_bytes
+# csr_device_bytes
 # ---------------------------------------------------------------------------
-
-
-@given(mat=dense_matrix_with_sparsity(min_rows=1, max_rows=30, min_cols=1, max_cols=30))
-@settings(max_examples=50)
-def test_device_bytes_dense_equals_nbytes(mat):
-    assert device_bytes(mat) == mat.nbytes
 
 
 @given(mat=dense_matrix_with_sparsity(min_rows=1, max_rows=30, min_cols=1, max_cols=30))
@@ -64,11 +59,11 @@ def test_device_bytes_sparse_matches_int32_index_formula(mat):
     mat_csr = to_csr(mat)
     nnz = mat_csr.data.size
     expected = mat_csr.data.nbytes + (nnz + mat_csr.shape[0] + 1) * 4
-    assert device_bytes(mat_csr) == expected
+    assert csr_device_bytes(mat_csr) == expected
 
 
 # ---------------------------------------------------------------------------
-# GPUMatrix matmul/rmatmul: real-accelerator agreement with plain NumPy
+# to_gpu matmul/rmatmul: real-accelerator agreement with plain NumPy
 # ---------------------------------------------------------------------------
 
 

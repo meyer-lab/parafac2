@@ -10,8 +10,8 @@ from parafac2 import backend as backend_mod
 from parafac2.backend import (
     BACKEND_ENV_VAR,
     _cuda_is_usable,
-    _ensure_device_capacity,
-    device_bytes,
+    csr_device_bytes,
+    ensure_device_capacity,
     get_backend,
 )
 
@@ -105,8 +105,7 @@ def test_device_bytes_charges_int64_once_nnz_exceeds_int32(monkeypatch):
             size = 3_600_000_000
             nbytes = 3_600_000_000 * 4
 
-    monkeypatch.setattr(backend_mod, "issparse", lambda _m: True)
-    got = device_bytes(_Huge)  # ty: ignore[invalid-argument-type]
+    got = csr_device_bytes(_Huge)  # ty: ignore[invalid-argument-type]
     expected = _Huge.data.nbytes + (3_600_000_000 + 1_185_861 + 1) * 8
     assert got == expected
     # int32 accounting would have understated it by ~14.5 GB.
@@ -117,7 +116,7 @@ def test_capacity_check_is_a_noop_when_the_matrix_fits(monkeypatch):
     monkeypatch.setattr(backend_mod, "_managed_allocator_installed", False)
     fake_cupy = _fake_cupy(free=100_000, total=100_000)
     monkeypatch.setitem(sys.modules, "cupy", fake_cupy)
-    assert _ensure_device_capacity(1_000) is False
+    assert ensure_device_capacity(1_000) is False
     assert fake_cupy.cuda.set_allocator.calls == []
 
 
@@ -125,7 +124,7 @@ def test_capacity_check_installs_managed_memory_when_it_does_not_fit(monkeypatch
     monkeypatch.setattr(backend_mod, "_managed_allocator_installed", False)
     fake_cupy = _fake_cupy(free=1_000, total=2_000, managed=True)
     monkeypatch.setitem(sys.modules, "cupy", fake_cupy)
-    assert _ensure_device_capacity(10_000) is True
+    assert ensure_device_capacity(10_000) is True
     assert len(fake_cupy.cuda.set_allocator.calls) == 1
     assert backend_mod._managed_allocator_installed is True
 
@@ -139,7 +138,7 @@ def test_capacity_check_raises_a_useful_error_when_it_cannot_oversubscribe(
         sys.modules, "cupy", _fake_cupy(free=1_000, total=2_000, managed=False)
     )
     with pytest.raises(MemoryError, match=BACKEND_ENV_VAR):
-        _ensure_device_capacity(10_000)
+        ensure_device_capacity(10_000)
 
 
 def test_capacity_check_does_not_reinstall_the_pool(monkeypatch):
@@ -147,7 +146,7 @@ def test_capacity_check_does_not_reinstall_the_pool(monkeypatch):
     monkeypatch.setattr(backend_mod, "_managed_allocator_installed", True)
     fake_cupy = _fake_cupy(free=1_000, total=2_000, managed=True)
     monkeypatch.setitem(sys.modules, "cupy", fake_cupy)
-    assert _ensure_device_capacity(10_000) is True
+    assert ensure_device_capacity(10_000) is True
     assert fake_cupy.cuda.set_allocator.calls == []
 
 
@@ -198,7 +197,7 @@ def _fake_nvmath_module(calls: list):
 
 
 def test_sparse_matmul_on_cupy_routes_through_nvmath_not_cusparse_at(monkeypatch):
-    """A sparse `cp_mat @ rhs` must go through nvmath, never CuPy's own `@`.
+    """A sparse `device_mat @ rhs` must go through nvmath, never CuPy's own `@`.
 
     cuSPARSE's legacy `csrmm2` (what CuPy's `@` uses for CSR-by-dense) hands
     the raw index-buffer pointers to an int32-only API with no dtype check,
@@ -214,7 +213,7 @@ def test_sparse_matmul_on_cupy_routes_through_nvmath_not_cusparse_at(monkeypatch
         shape = (4, 3)
 
     rhs = np.ones((3, 2), dtype=np.float32)
-    result = backend_mod._matmul_cupy(_FakeSparse(None), rhs, is_sparse=True)
+    result = backend_mod.cupy_csr_matmul(_FakeSparse(None), rhs, (4, 3))
 
     assert len(calls) == 1
     _a, b, c, qualifiers = calls[0]
@@ -234,7 +233,7 @@ def test_sparse_rmatmul_on_cupy_routes_through_nvmath_with_transpose(monkeypatch
         shape = (4, 3)
 
     lhs = np.ones((2, 4), dtype=np.float32)
-    result = backend_mod._rmatmul_cupy(lhs, _FakeSparse(None), is_sparse=True)
+    result = backend_mod.cupy_csr_rmatmul(lhs, _FakeSparse(None), (4, 3))
 
     assert len(calls) == 1
     _a, _b, c, qualifiers = calls[0]
@@ -255,7 +254,7 @@ def test_dense_matmul_on_cupy_still_uses_plain_at(monkeypatch):
             return other
 
     rhs = np.ones((3, 2), dtype=np.float32)
-    result = backend_mod._matmul_cupy(_FakeDense(), rhs, is_sparse=False)
+    result = backend_mod.cupy_dense_matmul(_FakeDense(), rhs, (4, 3))
     assert result is rhs
 
 

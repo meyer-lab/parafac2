@@ -18,16 +18,15 @@ import anndata
 import numpy as np
 from tqdm import tqdm
 
-from .backend import to_gpu
 from .compress import (
     CompressedData,
     compress_dataset,
     init_compressed_factors,
     project_data_compressed,
 )
+from .matrix import as_matrix, to_gpu
 from .utils import (
     calc_err,
-    calc_norm_sq,
     calc_W,
     condition_slices,
     extract_dataset_info,
@@ -109,8 +108,10 @@ def parafac2_init(
     Parameters
     ----------
     X : Any
-        The (optionally sparse or GPU-backed) data matrix, stacked across
-        all conditions, with shape ``(total_cells, n_genes)``.
+        The data matrix, stacked across all conditions, with shape
+        ``(total_cells, n_genes)``. Any object satisfying the duck-typed
+        contract in :mod:`parafac2.matrix`, or a plain NumPy/SciPy sparse
+        matrix (wrapped here via :func:`~parafac2.matrix.as_matrix`).
     condition_unique_idxs : np.ndarray
         Integer array of length ``total_cells`` giving each row's condition
         index.
@@ -118,7 +119,8 @@ def parafac2_init(
         The number of components to compute.
     means : np.ndarray | None, default None
         Per-gene means to mean-center ``X`` by, or ``None`` to skip
-        centering.
+        centering. Only accepted for a plain NumPy/SciPy ``X``; a matrix
+        that handles its own centering must not be given one.
     random_state : int | np.random.Generator | None, default None
         Seed or generator controlling the random projection used by the
         randomized SVD.
@@ -129,7 +131,7 @@ def parafac2_init(
         Number of power iterations used to refine the random projection.
     norm_tensor : float | None, default None
         Precomputed squared Frobenius norm of the mean-centered ``X``. If
-        ``None``, it is computed via :func:`~parafac2.utils.calc_norm_sq`.
+        ``None``, it is computed via ``X.norm_sq()``.
 
     Returns
     -------
@@ -138,13 +140,13 @@ def parafac2_init(
         ``B`` the identity, and ``C`` the top right-singular vectors of the
         mean-centered ``X``), and the squared Frobenius norm ``norm_tensor``.
     """
+    X = as_matrix(X, means)
     n_cond = int(np.amax(condition_unique_idxs)) + 1
     if norm_tensor is None:
-        norm_tensor = calc_norm_sq(X, means)
+        norm_tensor = float(X.norm_sq())
 
     C = randomized_svd_right(
         X,
-        means,
         n_components=rank,
         n_oversamples=n_oversamples,
         n_power_iter=n_iter,
@@ -379,7 +381,7 @@ def parafac2_nd(
     (
         X_mat,
         condition_unique_idxs,
-        means,
+        _means,
         norm_tensor,
         slice_weights,
     ) = extract_dataset_info(X_in, normalize_slices=normalize_slices)
@@ -399,7 +401,6 @@ def parafac2_nd(
         X_raw,
         condition_unique_idxs,
         rank=rank,
-        means=means,
         random_state=random_state,
         norm_tensor=norm_tensor,
     )
@@ -409,7 +410,7 @@ def parafac2_nd(
     # W depends only on C, so it stays valid across the A and B updates and is
     # recomputed only once C changes. Each sweep therefore costs exactly two
     # raw-data products: this one and the X^T @ H inside the mode-2 update.
-    W = calc_W(X_raw, means, factors[2])
+    W = calc_W(X_raw, factors[2])
     projections, S = project_data(W, factors, cond_slices)
     errs = [calc_err(S, factors, norm_tensor) / norm_tensor]
 
@@ -431,14 +432,13 @@ def parafac2_nd(
             S,
             projections,
             X=X_raw,
-            means=means,
             cond_slices=cond_slices,
             slice_weights=slice_weights,
         )
 
         # C changed, so refresh W; this also yields the projections and error
         # for the factors as they stand at the end of this sweep.
-        W = calc_W(X_raw, means, factors[2])
+        W = calc_W(X_raw, factors[2])
         projections, S = project_data(W, factors, cond_slices)
         errs.append(calc_err(S, factors, norm_tensor) / norm_tensor)
 
