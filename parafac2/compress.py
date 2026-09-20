@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
 
-from .backend import to_gpu
+from .matrix import to_gpu
 from .utils import (
     calc_W,
     extract_dataset_info,
@@ -83,7 +83,6 @@ class CompressedData:
 
 def compress_genes(
     X: Any,
-    means: np.ndarray | None,
     L_g: int,
     n_power_iter: int = 2,
     random_state: int | np.random.Generator | None = None,
@@ -93,9 +92,8 @@ def compress_genes(
     Parameters
     ----------
     X : Any
-        Stacked data matrix of shape ``(total_cells, n_genes)``.
-    means : np.ndarray | None
-        Per-gene means for centering.
+        Stacked data matrix of shape ``(total_cells, n_genes)``, already
+        accounting for any mean-centering (see :mod:`parafac2.matrix`).
     L_g : int
         Target gene subspace dimension.
     n_power_iter : int, default 2
@@ -118,13 +116,12 @@ def compress_genes(
 
     Q = randomized_svd_right(
         X,
-        means,
         n_components=L_g,
         n_oversamples=0,
         n_power_iter=n_power_iter,
         random_state=random_state,
     )
-    X_c = calc_W(X, means, Q)
+    X_c = calc_W(X, Q)
     norm_Xc_sq = float(np.sum(X_c**2))
 
     return X_c, Q, norm_Xc_sq
@@ -185,7 +182,7 @@ def compress_cells(
 
 def compress_dataset(
     X_in: anndata.AnnData,
-    L: int | tuple[int, int | None] | str = "auto",
+    L: int | tuple[int, int | None] | str | bool = "auto",
     rank: int | None = None,
     n_power_iter: int = 2,
     random_state: int | np.random.Generator | None = None,
@@ -200,8 +197,8 @@ def compress_dataset(
         Input dataset with data in ``X_in.X``, condition indices in
         ``X_in.obs["condition_unique_idxs"]``, and optional means in
         ``X_in.var["means"]``.
-    L : int | tuple[int, int | None] | str, default "auto"
-        Compression dimension(s). If ``"auto"``, picks dimensions based on
+    L : int | tuple[int, int | None] | str | bool, default "auto"
+        Compression dimension(s). If ``"auto"`` or ``True``, picks dimensions based on
         ``rank`` (or default rank 30 if ``rank`` is None). If an int, sets
         both ``L_g = L`` and ``L_c = L``. If a tuple ``(L_g, L_c)``, sets
         gene and cell dimensions individually (pass ``L_c=None`` for
@@ -235,7 +232,9 @@ def compress_dataset(
 
     # Determine L_g and L_c
     target_rank = rank if rank is not None else 30
-    if isinstance(L, str) and L == "auto":
+    # `L is True` has to be checked before the int branch: `bool` is a
+    # subclass of `int`, so `compress=True` would otherwise be read as L=1.
+    if L is True or (isinstance(L, str) and L == "auto"):
         L_g_val = min(n_genes, max(4 * target_rank, target_rank + 20))
         L_c_val: int | None = max(4 * target_rank, target_rank + 20)
     elif isinstance(L, tuple):
@@ -250,7 +249,6 @@ def compress_dataset(
     X_raw = to_gpu(X_mat, backend=backend)
     X_c, Q, _norm_Xc_sq = compress_genes(
         X_raw,
-        means,
         L_g=L_g_val,
         n_power_iter=n_power_iter,
         random_state=random_state,

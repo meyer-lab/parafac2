@@ -12,10 +12,10 @@ from tensorly.decomposition._parafac2 import _parafac2_reconstruction_error
 from tensorly.parafac2_tensor import parafac2_to_slices
 from tensorly.random import random_parafac2
 
+from ..matrix import as_matrix
 from ..parafac2 import parafac2_init, parafac2_nd
 from ..utils import (
     calc_err,
-    calc_norm_sq,
     calc_W,
     condition_slices,
     parafac_update,
@@ -25,15 +25,17 @@ from ..utils import (
 
 def _project(X, cond_idxs, means, factors):
     """Compute ``(projections, S)`` for the given data and factors."""
+    X = as_matrix(X, means)
     slices = condition_slices(cond_idxs, int(np.amax(cond_idxs)) + 1)
-    W = calc_W(X, means, factors[2])
+    W = calc_W(X, factors[2])
     return project_data(W, factors, slices)
 
 
 def _mttkrp(X, cond_idxs, means, factors, mode):
     """Return the MTTKRP for ``mode``, recovered from a ``parafac_update`` solve."""
+    X = as_matrix(X, means)
     slices = condition_slices(cond_idxs, int(np.amax(cond_idxs)) + 1)
-    W = calc_W(X, means, factors[2])
+    W = calc_W(X, factors[2])
     projections, S = project_data(W, factors, slices)
 
     rank = factors[1].shape[0]
@@ -48,7 +50,6 @@ def _mttkrp(X, cond_idxs, means, factors, mode):
         S,
         projections,
         X=X,
-        means=means,
         cond_slices=slices,
     )
     # parafac_update solves `mttkrp @ inv(v) = factor`, so invert to recover it.
@@ -353,7 +354,7 @@ def test_project_data_sparse_dense_with_means():
     X_dense = np.concatenate([x + means for x in X_slices], axis=0)
     X_sparse = csr_array(X_dense)
     cond_idxs = np.concatenate([[i] * s[0] for i, s in enumerate(shapes)])
-    norm_sq = calc_norm_sq(X_dense, means)
+    norm_sq = as_matrix(X_dense, means).norm_sq()
 
     for mode in range(3):
         mtt_d = _mttkrp(X_dense, cond_idxs, means, factors, mode)

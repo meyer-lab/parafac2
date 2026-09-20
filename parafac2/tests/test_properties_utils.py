@@ -14,9 +14,8 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
 
+from ..matrix import CSRMatrix, DenseMatrix
 from ..utils import (
-    calc_norm_sq,
-    calc_slice_norms,
     condition_slices,
     polar_factor,
     randomized_svd_right,
@@ -31,7 +30,7 @@ from .strategies import (
 )
 
 # ---------------------------------------------------------------------------
-# calc_norm_sq
+# norm_sq
 # ---------------------------------------------------------------------------
 
 
@@ -41,14 +40,14 @@ from .strategies import (
     data=st.data(),
 )
 @settings(max_examples=100)
-def test_calc_norm_sq_sparse_dense_agree(mat, has_means, data):
-    """calc_norm_sq must agree bit-for-bit-close whether X is dense or sparse."""
+def test_norm_sq_sparse_dense_agree(mat, has_means, data):
+    """norm_sq must agree bit-for-bit-close whether X is dense or sparse."""
     means = (
         data.draw(real_arrays((mat.shape[1],)), label="means") if has_means else None
     )
 
-    dense_result = calc_norm_sq(mat, means)
-    sparse_result = calc_norm_sq(to_csr(mat), means)
+    dense_result = DenseMatrix(mat, means).norm_sq()
+    sparse_result = CSRMatrix(to_csr(mat), means).norm_sq()
 
     assert dense_result >= -1e-6  # a squared norm cannot be (meaningfully) negative
     np.testing.assert_allclose(dense_result, sparse_result, rtol=1e-6, atol=1e-6)
@@ -59,14 +58,14 @@ def test_calc_norm_sq_sparse_dense_agree(mat, has_means, data):
 
 
 # ---------------------------------------------------------------------------
-# calc_slice_norms
+# slice_norms
 # ---------------------------------------------------------------------------
 
 
 @given(mat=dense_matrix_with_sparsity(min_rows=2, max_rows=15), data=st.data())
 @settings(max_examples=100)
-def test_calc_slice_norms_matches_bruteforce(mat, data):
-    """calc_slice_norms must match a brute-force per-condition norm, for
+def test_slice_norms_matches_bruteforce(mat, data):
+    """slice_norms must match a brute-force per-condition norm, for
     dense and sparse input, with and without centering."""
     n_rows = mat.shape[0]
     idxs = data.draw(condition_groups(n_rows=n_rows), label="idxs")
@@ -83,8 +82,8 @@ def test_calc_slice_norms_matches_bruteforce(mat, data):
         ]
     )
 
-    result_dense = calc_slice_norms(mat, means, idxs, n_cond)
-    result_sparse = calc_slice_norms(to_csr(mat), means, idxs, n_cond)
+    result_dense = DenseMatrix(mat, means).slice_norms(idxs, n_cond)
+    result_sparse = CSRMatrix(to_csr(mat), means).slice_norms(idxs, n_cond)
 
     # The sparse path expands ||X - mu||^2 into sum-of-squares cross terms
     # (to avoid densifying X), which loses precision to cancellation when a
@@ -218,7 +217,11 @@ def test_randomized_svd_right_raises_instead_of_silently_truncating():
 
     with pytest.raises(ValueError, match="cannot exceed the maximum possible rank"):
         randomized_svd_right(
-            X, None, n_components=4, n_oversamples=0, n_power_iter=2, random_state=0
+            DenseMatrix(X),
+            n_components=4,
+            n_oversamples=0,
+            n_power_iter=2,
+            random_state=0,
         )
 
 

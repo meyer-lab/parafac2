@@ -14,6 +14,10 @@
 
 ::: parafac2.compress
 
+## parafac2.matrix
+
+::: parafac2.matrix
+
 ## parafac2.utils
 
 ::: parafac2.utils

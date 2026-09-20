@@ -1,10 +1,9 @@
 """
 Low-level numerical routines supporting the PARAFAC2 fit.
 
-Provides norm computation over (optionally mean-centered, optionally sparse)
-data, the per-condition projection step, the per-mode ALS factor update
-(which forms its own MTTKRP), and post-fit standardization of the factors and
-projections.
+Provides the per-condition projection step, the per-mode ALS factor update
+(which forms its own MTTKRP), the randomized SVD used for initialization,
+and post-fit standardization of the factors and projections.
 
 The fit touches the raw data through exactly two products, which together
 dominate runtime on single-cell-sized inputs:
@@ -19,24 +18,13 @@ error are all functions of ``S`` alone, so the projections and both of those
 factor updates can be recomputed from a cached ``W`` without re-reading the
 data.
 
-Beyond ``np.ndarray``/``scipy.sparse``, ``X`` may be any duck-typed matrix
-that implements ``.shape``, ``.dtype``, ``__matmul__``/``__rmatmul__`` (used
-by :func:`~parafac2.backend.matmul`/:func:`~parafac2.backend.rmatmul`, and so
-by :func:`calc_W`/:func:`parafac_update`/``randomized_svd_right`` without any
-further changes here), and optionally ``norm_sq()``/``slice_norms(condition_idxs,
-n_cond)`` (used by :func:`calc_norm_sq`/:func:`calc_slice_norms` in place of
-the dense/sparse fast paths below) and ``to_device(backend)`` (used by
-:func:`~parafac2.backend.to_gpu` to run on a GPU backend). A type that
-already centers itself internally (e.g. an implicit mean-subtracted view)
-should implement ``norm_sq``/``slice_norms`` to account for that on its own,
-matching what :func:`~parafac2.compress.extract_dataset_info` expects when it
-finds no explicit ``means``.
-
-Such a type should also set ``__array_ufunc__ = None`` (as ``vsparse``'s
-arrays do). Without it, ``lhs @ X`` for a plain NumPy ``lhs`` has NumPy try to
-broadcast ``X`` into an ``ndarray`` itself rather than deferring to ``X``'s
-own ``__rmatmul__``, which fails outright for a type that cannot be
-converted to a NumPy array (as most duck-typed backends here cannot).
+Nothing here inspects ``X``'s type. ``X`` is any object satisfying the
+duck-typed matrix contract in :mod:`parafac2.matrix` -- a NumPy array or
+SciPy CSR array wrapped by :func:`~parafac2.matrix.as_matrix`, or a
+third-party type (e.g. one of ``vsparse``'s normalized views) implementing
+it directly. In particular the matrix carries its own mean-centering, so
+``X @ C`` already means ``(X - 1 mu^T) @ C`` and no ``means`` argument is
+threaded through these routines.
 """
 
 from __future__ import annotations
@@ -45,126 +33,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
-from scipy.sparse import issparse
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 
-from .backend import matmul, matrix_dtype, rmatmul
+from .matrix import as_matrix
 
 if TYPE_CHECKING:
     import anndata
-    from scipy.sparse import csr_array
-
-
-def calc_norm_sq(X: Any, means: np.ndarray | None = None) -> float:
-    """Return the squared Frobenius norm of the mean-centered matrix.
-
-    Parameters
-    ----------
-    X : np.ndarray | csr_array | Any
-        The (dense or sparse) matrix to compute the norm of. A type other
-        than ``np.ndarray``/``csr_array`` may instead implement a ``norm_sq()``
-        method (taking no arguments, since such a type is expected to already
-        account for any centering internally -- see the module docstring's
-        note on duck-typed backends), which is used in preference to the
-        dense/sparse paths below.
-
-    Returns
-    -------
-    float
-        ``sum((X - means) ** 2)``, computed without densifying a sparse
-        ``X``.
-    """
-    if hasattr(X, "norm_sq"):
-        if means is not None and not np.all(means == 0):
-            raise ValueError(
-                f"{type(X).__name__} implements its own centering via "
-                "`norm_sq()`; passing a nonzero `means` alongside it is not "
-                "supported."
-            )
-        return float(X.norm_sq())
-
-    if means is None or np.all(means == 0):
-        if issparse(X):
-            return float(np.sum(cast("csr_array", X).data ** 2))
-        return float(np.sum(X**2))
-
-    means_arr = np.asarray(means).ravel()
-    if issparse(X):
-        mat_csr = cast("csr_array", X)
-        M = mat_csr.shape[0]
-        term1 = np.sum(mat_csr.data**2)
-        term2 = -2.0 * np.sum(mat_csr.data * means_arr[mat_csr.indices])
-        term3 = M * np.sum(means_arr**2)
-        return float(term1 + term2 + term3)
-    return float(np.sum((X - means_arr) ** 2))
-
-
-def calc_slice_norms(
-    X: Any,
-    means: np.ndarray | None,
-    condition_unique_idxs: np.ndarray,
-    n_cond: int,
-) -> np.ndarray:
-    """Return the per-condition Frobenius norm of the mean-centered slices.
-
-    Parameters
-    ----------
-    X : np.ndarray | csr_array | Any
-        The (dense or sparse) matrix stacked across all conditions. A type
-        other than ``np.ndarray``/``csr_array`` may instead implement a
-        ``slice_norms(condition_idxs, n_cond)`` method (since such a type is
-        expected to already account for any centering internally -- see
-        :func:`calc_norm_sq`), which is used in preference to the dense/
-        sparse paths below.
-    means : np.ndarray | None
-        Per-column means to subtract before computing each slice's norm, or
-        ``None``/all-zero to skip centering.
-    condition_unique_idxs : np.ndarray
-        Integer array assigning each row of ``X`` to a condition index in
-        ``[0, n_cond)``.
-    n_cond : int
-        The total number of conditions.
-
-    Returns
-    -------
-    np.ndarray
-        Array of length ``n_cond`` with the Frobenius norm of each
-        condition's (mean-centered) rows of ``X``.
-    """
-    idxs = np.asarray(condition_unique_idxs)
-
-    if hasattr(X, "slice_norms"):
-        if means is not None and not np.all(means == 0):
-            raise ValueError(
-                f"{type(X).__name__} implements its own centering via "
-                "`slice_norms()`; passing a nonzero `means` alongside it is "
-                "not supported."
-            )
-        return np.asarray(X.slice_norms(idxs, n_cond), dtype=np.float64)
-
-    counts = np.bincount(idxs, minlength=n_cond).astype(np.float64)
-
-    if issparse(X):
-        mat_csr = cast("csr_array", X)
-        group_of_nnz = np.repeat(idxs, np.diff(mat_csr.indptr))
-        sums_sq = np.bincount(
-            group_of_nnz, weights=mat_csr.data.astype(np.float64) ** 2, minlength=n_cond
-        )
-        if means is None or np.all(means == 0):
-            return np.sqrt(sums_sq)
-
-        means_arr = np.asarray(means).ravel()
-        cross = np.bincount(
-            group_of_nnz,
-            weights=mat_csr.data.astype(np.float64) * means_arr[mat_csr.indices],
-            minlength=n_cond,
-        )
-        mean_sq_total = np.sum(means_arr**2)
-        return np.sqrt(np.maximum(sums_sq - 2.0 * cross + counts * mean_sq_total, 0.0))
-
-    means_arr = np.asarray(means).ravel() if means is not None else 0.0
-    row_sums_sq = np.sum((np.asarray(X) - means_arr) ** 2, axis=1)
-    return np.sqrt(np.bincount(idxs, weights=row_sums_sq, minlength=n_cond))
 
 
 def condition_slices(
@@ -205,25 +79,18 @@ def condition_slices(
     return [order[bounds[k] : bounds[k + 1]] for k in range(n_cond)]
 
 
-def calc_W(X: Any, means: np.ndarray | None, C: np.ndarray) -> np.ndarray:
+def calc_W(X: Any, C: np.ndarray) -> np.ndarray:
     """Compute ``W = (X - 1 mu^T) @ C``, the first of the two raw-data products.
 
     ``W`` depends only on ``C``, so it stays valid across the ``A`` and ``B``
-    updates and only has to be recomputed once ``C`` changes.
-
-    The product is taken in ``X``'s own dtype. That matters: handing a
-    float64 ``C`` to a float32 sparse ``X`` makes SciPy upcast the entire
-    sparse matrix, doubling both the memory traffic that dominates this step
-    and the peak memory. The result is widened to float64 afterwards, which
-    is ``O(n_cells * rank)`` and so negligible beside the product itself.
+    updates and only has to be recomputed once ``C`` changes. Any centering
+    and dtype handling belongs to ``X`` itself (see :mod:`parafac2.matrix`).
 
     Parameters
     ----------
     X : Any
-        The (optionally sparse or GPU-backed) data matrix, stacked across all
-        conditions, with shape ``(total_cells, n_genes)``.
-    means : np.ndarray | None
-        Per-gene means to mean-center ``X`` by, or ``None`` to skip centering.
+        The data matrix, stacked across all conditions, with shape
+        ``(total_cells, n_genes)``.
     C : np.ndarray
         The current gene factor matrix, shape ``(n_genes, rank)``.
 
@@ -232,11 +99,7 @@ def calc_W(X: Any, means: np.ndarray | None, C: np.ndarray) -> np.ndarray:
     np.ndarray
         The float64 array ``W`` of shape ``(total_cells, rank)``.
     """
-    C_op = np.ascontiguousarray(C, dtype=matrix_dtype(X))
-    W = np.asarray(matmul(X, C_op), dtype=np.float64)
-    if means is not None:
-        W -= means @ C
-    return W
+    return np.asarray(X @ C, dtype=np.float64)
 
 
 def polar_factor(M: np.ndarray) -> np.ndarray:
@@ -372,7 +235,6 @@ def parafac_update(
     projections: list[np.ndarray] | None = None,
     *,
     X: Any = None,
-    means: np.ndarray | None = None,
     cond_slices: list[slice | np.ndarray] | None = None,
     slice_weights: np.ndarray | None = None,
 ) -> list[np.ndarray]:
@@ -402,8 +264,6 @@ def parafac_update(
         The per-condition projections. Required for ``mode=2`` only.
     X : Any, keyword-only, default None
         The raw data matrix. Required for ``mode=2`` only.
-    means : np.ndarray | None, keyword-only, default None
-        Per-gene means to mean-center ``X`` by. Used for ``mode=2`` only.
     cond_slices : list[slice | np.ndarray] | None, keyword-only, default None
         Per-condition row selectors from :func:`condition_slices`. Required
         for ``mode=2`` only.
@@ -439,17 +299,14 @@ def parafac_update(
             raise ValueError(
                 "mode=2 needs `projections`, `X`, and `cond_slices` to form its MTTKRP."
             )
-        # Build H^T directly so the dense operand of the X^T @ H product is
-        # C-contiguous and shares X's dtype (see calc_W on why that matters).
-        H_T = np.empty((rank, X.shape[0]), dtype=matrix_dtype(X))
+        # Build H^T directly, in X's own dtype, so the dense operand of the
+        # X^T @ H product needs no conversion on its way into the kernel.
+        H_T = np.empty((rank, X.shape[0]), dtype=X.dtype)
         for k, sel in enumerate(cond_slices):
             w_k = 1.0 if slice_weights is None else slice_weights[k]
             H_T[:, sel] = (projections[k] @ (B * A[k]) * w_k).T
 
-        mttkrp_T = np.asarray(rmatmul(H_T, X), dtype=np.float64)
-        if means is not None:
-            mttkrp_T -= np.outer(H_T.sum(axis=1), means)
-        mttkrp = mttkrp_T.T
+        mttkrp = np.asarray(H_T @ X, dtype=np.float64).T
 
     return solve_factors(factors, mttkrp, mode)
 
@@ -506,7 +363,6 @@ def standardize_pf2(
 
 def randomized_svd_right(
     X: Any,
-    means: np.ndarray | None,
     n_components: int,
     n_oversamples: int = 0,
     n_power_iter: int = 2,
@@ -517,10 +373,8 @@ def randomized_svd_right(
     Parameters
     ----------
     X : Any
-        The (optionally sparse or GPU-backed) data matrix of shape
-        ``(total_cells, n_genes)``.
-    means : np.ndarray | None
-        Per-gene means for implicit centering, or ``None``.
+        The data matrix of shape ``(total_cells, n_genes)``, already
+        accounting for any mean-centering (see :mod:`parafac2.matrix`).
     n_components : int
         Number of right-singular vectors to return.
     n_oversamples : int, default 0
@@ -561,28 +415,17 @@ def randomized_svd_right(
     )
     l_dim = min(n_genes, n_cells, n_components + n_oversamples)
 
-    X_dtype = matrix_dtype(X)
-
     Omega = rng.normal(size=(n_genes, l_dim)).astype(np.float64)
-    Y = np.asarray(matmul(X, Omega.astype(X_dtype)), dtype=np.float64)
-    if means is not None:
-        Y -= means @ Omega
+    Y = np.asarray(X @ Omega, dtype=np.float64)
 
     for _ in range(n_power_iter):
         Q, _ = np.linalg.qr(Y, mode="reduced")
-        Z_T = np.asarray(rmatmul(Q.T.astype(X_dtype), X), dtype=np.float64)
-        if means is not None:
-            Z_T -= np.outer(np.sum(Q.T, axis=1), means)
-        Z = Z_T.T
+        Z = np.asarray(Q.T @ X, dtype=np.float64).T
         Q_z, _ = np.linalg.qr(Z, mode="reduced")
-        Y = np.asarray(matmul(X, Q_z.astype(X_dtype)), dtype=np.float64)
-        if means is not None:
-            Y -= means @ Q_z
+        Y = np.asarray(X @ Q_z, dtype=np.float64)
 
     Q, _ = np.linalg.qr(Y, mode="reduced")
-    B = np.asarray(rmatmul(Q.T.astype(X_dtype), X), dtype=np.float64)
-    if means is not None:
-        B -= np.outer(np.sum(Q.T, axis=1), means)
+    B = np.asarray(Q.T @ X, dtype=np.float64)
 
     _, _, vh = np.linalg.svd(B, full_matrices=False)
     return vh[:n_components, :].T.astype(np.float64)
@@ -591,8 +434,13 @@ def randomized_svd_right(
 def extract_dataset_info(
     X_in: anndata.AnnData,
     normalize_slices: bool = False,
-) -> tuple[np.ndarray | csr_array, np.ndarray, np.ndarray, float, np.ndarray | None]:
-    """Extract matrix, condition indices, gene means, norm_sq, and optional slice weights.
+) -> tuple[Any, np.ndarray, np.ndarray, float, np.ndarray | None]:
+    """Wrap an AnnData's matrix and summarize what the fit needs up front.
+
+    This is the boundary where a dataset stops being a specific storage type
+    and becomes an opaque duck-typed matrix: ``X_in.X`` is handed to
+    :func:`~parafac2.matrix.as_matrix` together with any per-gene means, and
+    everything downstream works through that object alone.
 
     Parameters
     ----------
@@ -603,11 +451,12 @@ def extract_dataset_info(
 
     Returns
     -------
-    tuple[np.ndarray | csr_array, np.ndarray, np.ndarray, float, np.ndarray | None]
-        The ``(X_mat, condition_unique_idxs, means, norm_tensor, slice_weights)`` tuple.
+    tuple[Any, np.ndarray, np.ndarray, float, np.ndarray | None]
+        The ``(X, condition_unique_idxs, means, norm_tensor, slice_weights)``
+        tuple. ``means`` is returned for bookkeeping only -- it is already
+        folded into ``X``.
     """
     assert X_in.X is not None
-    X_mat = cast("np.ndarray | csr_array", X_in.X)
     condition_unique_idxs = cast(
         "np.ndarray", X_in.obs["condition_unique_idxs"].to_numpy(dtype=int)
     )
@@ -616,13 +465,16 @@ def extract_dataset_info(
     if "means" in X_in.var:
         means = X_in.var["means"].to_numpy()
     else:
-        means = np.zeros(X_mat.shape[1])
+        means = np.zeros(X_in.shape[1])
 
-    norm_tensor = calc_norm_sq(X_mat, means)
+    X = as_matrix(X_in.X, means)
+    norm_tensor = float(X.norm_sq())
 
     slice_weights: np.ndarray | None = None
     if normalize_slices:
-        slice_norms = calc_slice_norms(X_mat, means, condition_unique_idxs, n_cond)
+        slice_norms = np.asarray(
+            X.slice_norms(condition_unique_idxs, n_cond), dtype=np.float64
+        )
         slice_weights = np.where(slice_norms > 1e-10, 1.0 / slice_norms, 1.0)
 
-    return X_mat, condition_unique_idxs, means, norm_tensor, slice_weights
+    return X, condition_unique_idxs, means, norm_tensor, slice_weights

@@ -278,6 +278,27 @@ An explicit `backend=` argument still takes precedence; however, the environment
 
 ---
 
+## Approach 6: Custom Data Types
+
+The fit never inspects the type of the data matrix. NumPy arrays and SciPy sparse arrays are wrapped by `parafac2.matrix.as_matrix` into `DenseMatrix`/`CSRMatrix`, and everything downstream — the randomized SVD, `calc_W`, the mode-2 MTTKRP, the norms — reaches the data only through a small duck-typed contract. Any object implementing that contract can be used as `adata.X` instead, including storage formats `parafac2` knows nothing about (e.g. a `vsparse` normalized view).
+
+The contract is:
+
+| Member | Meaning |
+| --- | --- |
+| `shape`, `dtype` | The `(n_rows, n_cols)` shape, and the dtype products are taken in. |
+| `X @ rhs`, `lhs @ X` | Products against a 1-D or 2-D NumPy array, returning **float64**. |
+| `norm_sq()` | Squared Frobenius norm. |
+| `slice_norms(condition_idxs, n_cond)` | Per-condition Frobenius norms. |
+| `to_device(backend)` | The same contract with the data on `'cupy'`/`'mlx'`. Only needed for a GPU backend. |
+| `__array_ufunc__ = None` | Required so `lhs @ X` defers to `X.__rmatmul__` rather than NumPy trying to broadcast `X`. |
+
+Mean-centering belongs to the matrix: `X @ C` must already mean `(X - 1 μᵀ) @ C`. The built-in wrappers take a `means` argument and apply it as a rank-1 correction to the (small) product, so a sparse matrix is never densified; a type that centers itself internally simply accounts for it in its own products and norms, and must not also be handed `adata.var["means"]`.
+
+Subclassing `parafac2.matrix.Matrix` supplies the operand coercion, the float64 result, and the centering for you — only the raw products and the two norms are left to implement.
+
+---
+
 ## What Compression Guarantees
 
 These are properties of the method, not implementation details, and downstream code can rely on them.
