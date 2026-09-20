@@ -167,6 +167,7 @@ def _fit_parafac2_compressed(
     random_state: int | None = None,
     callback: Callable[[int, float, list[np.ndarray]], None] | None = None,
     verbose: bool = True,
+    fix_B_identity: bool = False,
 ) -> tuple[tuple[np.ndarray, list[np.ndarray], list[np.ndarray]], float]:
     """Internal fitting loop over compressed cores."""
     if rank > compressed.L_g:
@@ -189,9 +190,13 @@ def _fit_parafac2_compressed(
     )
     errs = [err]
 
+    # Holding B at the identity is just dropping its update from the sweep;
+    # every other mode still sees it through the Gram products.
+    modes = [0, 2] if fix_B_identity else [0, 1, 2]
+
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=0.5)
     for iteration in tq:
-        for mode in range(len(factors)):
+        for i, mode in enumerate(modes):
             factors = solve_factors(
                 factors,
                 mttkrp,
@@ -201,7 +206,7 @@ def _fit_parafac2_compressed(
                 compressed.cores,
                 factors,
                 compressed.norm_tensor,
-                mode=(mode + 1) % len(factors),
+                mode=modes[(i + 1) % len(modes)],
                 slice_weights=compressed.slice_weights,
             )
 
@@ -252,6 +257,7 @@ def parafac2_nd(
     normalize_slices: bool = False,
     n_inner: int = 1,
     compress: int | tuple[int, int | None] | str | bool | None = None,
+    fix_B_identity: bool = False,
 ) -> tuple[tuple[np.ndarray, list[np.ndarray], list[np.ndarray]], float]:
     r"""The same interface as regular PARAFAC2 with optional CANDELINC compression.
 
@@ -317,6 +323,15 @@ def parafac2_nd(
         dimensions separately (pass ``L_c=None`` for gene-only compression).
         Ignored if ``X_in`` is already a
         :class:`~parafac2.compress.CompressedData`.
+    fix_B_identity : bool, default False
+        Whether to hold the ``B`` factor matrix fixed at the identity rather
+        than fitting it. ``B`` is initialized to the identity either way, so
+        this simply drops the mode-1 update from each ALS sweep; every other
+        mode still sees ``B`` as usual. This constrains each condition's
+        loading matrix to ``P_k diag(a_k)``, i.e. it ties component ``r`` to
+        the ``r``-th column of every projection, making the components
+        directly comparable across conditions at the cost of some fit. The
+        returned ``B`` is exactly the identity.
 
     Returns
     -------
@@ -338,6 +353,7 @@ def parafac2_nd(
             random_state=random_state,
             callback=callback,
             verbose=verbose,
+            fix_B_identity=fix_B_identity,
         )
 
     if compress is not None and compress is not False:
@@ -357,6 +373,7 @@ def parafac2_nd(
             random_state=random_state,
             callback=callback,
             verbose=verbose,
+            fix_B_identity=fix_B_identity,
         )
 
     (
@@ -403,8 +420,10 @@ def parafac2_nd(
         for _ in range(n_inner):
             factors = parafac_update(factors, 0, S, slice_weights=slice_weights)
             projections, S = project_data(W, factors, cond_slices)
-            factors = parafac_update(factors, 1, S, slice_weights=slice_weights)
-            projections, S = project_data(W, factors, cond_slices)
+            # B starts at the identity, so skipping its update leaves it there.
+            if not fix_B_identity:
+                factors = parafac_update(factors, 1, S, slice_weights=slice_weights)
+                projections, S = project_data(W, factors, cond_slices)
 
         factors = parafac_update(
             factors,

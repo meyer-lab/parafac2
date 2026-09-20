@@ -494,6 +494,120 @@ def test_parafac2_raises_when_a_condition_has_fewer_cells_than_rank():
         parafac2_nd(X_ann, rank=3, random_state=1, n_iter_max=5)
 
 
+@pytest.mark.parametrize("sparse", [False, True])
+@pytest.mark.parametrize("n_inner", [1, 2])
+def test_fix_B_identity_returns_identity(sparse: bool, n_inner: int):
+    """fix_B_identity=True must leave B exactly at the identity, while still
+    producing orthonormal projections and a sane R2X."""
+    shapes = [(30, 40) for _ in range(5)]
+    rank = 3
+    rng = np.random.default_rng(42)
+
+    X_list = [rng.normal(size=shape) for shape in shapes]
+    X_ann = pf2_to_anndata(X_list, sparse=sparse)
+
+    (_w, f, p), r2x = parafac2_nd(
+        X_ann,
+        rank=rank,
+        random_state=42,
+        n_iter_max=50,
+        tol=1e-6,
+        n_inner=n_inner,
+        fix_B_identity=True,
+    )
+
+    # Standardization permutes and sign-flips components, so check that the
+    # returned B is the identity on the nose rather than merely close to it.
+    np.testing.assert_array_equal(f[1], np.eye(rank))
+
+    assert 0.0 <= r2x <= 1.0
+    for P_k in p:
+        np.testing.assert_allclose(P_k.T @ P_k, np.eye(rank), atol=1e-5)
+
+
+def test_fix_B_identity_monotonicity():
+    """Dropping the B update must not break the monotone error decrease."""
+    shapes = [(30, 45) for _ in range(4)]
+    rank = 3
+    rng = np.random.default_rng(12)
+
+    X_ann = pf2_to_anndata([rng.normal(size=s) for s in shapes], sparse=False)
+
+    errors: list[float] = []
+    parafac2_nd(
+        X_ann,
+        rank=rank,
+        random_state=12,
+        n_iter_max=50,
+        tol=1e-10,
+        fix_B_identity=True,
+        callback=lambda _i, e, _f: errors.append(e),
+    )
+
+    assert len(errors) > 1
+    for i in range(1, len(errors)):
+        assert errors[i] - errors[i - 1] <= 1e-9, f"error rose at sweep {i}"
+
+
+def test_fix_B_identity_is_constrained_relative_to_free_B():
+    """Holding B fixed is a strict restriction of the model, so it cannot fit
+    better than the unconstrained solve, and it must actually change the fit."""
+    shapes = [(30, 25) for _ in range(5)]
+    rank = 3
+    rng = np.random.default_rng(3)
+
+    X_ann = pf2_to_anndata([rng.normal(size=s) for s in shapes], sparse=False)
+
+    (_w_free, f_free, _p_free), r2x_free = parafac2_nd(
+        X_ann, rank=rank, random_state=3, n_iter_max=80, tol=1e-10
+    )
+    (_w_fix, f_fix, _p_fix), r2x_fix = parafac2_nd(
+        X_ann,
+        rank=rank,
+        random_state=3,
+        n_iter_max=80,
+        tol=1e-10,
+        fix_B_identity=True,
+    )
+
+    np.testing.assert_array_equal(f_fix[1], np.eye(rank))
+    assert r2x_fix <= r2x_free + 1e-6
+
+    # The free fit moves B off the identity on this data, so the two runs
+    # must not coincide.
+    with pytest.raises(AssertionError):
+        np.testing.assert_allclose(f_free[1], f_fix[1], atol=1e-3)
+
+
+def test_fix_B_identity_recovers_identity_B_data():
+    """Data generated with B = I should still be recovered well when B is
+    held fixed at the identity."""
+    shapes = [(25, 35) for _ in range(5)]
+    rank = 3
+    rng = np.random.default_rng(100)
+
+    A = rng.uniform(0.5, 1.5, size=(len(shapes), rank))
+    C = rng.normal(size=(shapes[0][1], rank))
+    projections = [np.linalg.qr(rng.normal(size=(Ik, rank)))[0] for Ik, _ in shapes]
+
+    # B is the identity the fit will be pinned to, so the constrained model
+    # spans the truth exactly.
+    X_list = list(parafac2_to_slices((None, [A, np.eye(rank), C], projections)))
+    X_ann = pf2_to_anndata(X_list, sparse=False)
+
+    (_w_fit, f_fit, _p_fit), r2x = parafac2_nd(
+        X_ann,
+        rank=rank,
+        random_state=100,
+        n_iter_max=200,
+        tol=1e-12,
+        fix_B_identity=True,
+    )
+
+    np.testing.assert_array_equal(f_fit[1], np.eye(rank))
+    assert r2x > 0.99
+
+
 def test_get_backend_fallback(monkeypatch):
     """Test that get_backend falls back to 'cpu' when mlx and cupy are unimportable."""
     from ..backend import get_backend
