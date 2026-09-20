@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import scipy.linalg
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
@@ -223,6 +224,61 @@ def test_randomized_svd_right_raises_instead_of_silently_truncating():
             n_power_iter=2,
             random_state=0,
         )
+
+
+def test_randomized_svd_right_recovers_the_dominant_subspace():
+    """The LOBPCG refinement must land on the true top-k right-singular
+    subspace, not merely somewhere near it. A slowly decaying spectrum is the
+    hard case: a plain power iteration leaves the trailing directions badly
+    mixed, while refining against the Gram operator separates them.
+    """
+    rng = np.random.default_rng(0)
+    n_cells, n_genes, k = 600, 120, 8
+    U, _ = np.linalg.qr(rng.normal(size=(n_cells, n_genes)))
+    V, _ = np.linalg.qr(rng.normal(size=(n_genes, n_genes)))
+    X = (U * np.exp(-np.arange(n_genes) / 30.0)) @ V.T
+
+    Q = randomized_svd_right(DenseMatrix(X), n_components=k, random_state=0)
+    truth = np.linalg.svd(X, full_matrices=False)[2][:k].T
+
+    assert Q.shape == (n_genes, k)
+    np.testing.assert_allclose(Q.T @ Q, np.eye(k), atol=1e-10)
+    # The largest principal angle between the two subspaces.
+    assert scipy.linalg.subspace_angles(Q, truth).max() < 1e-4
+
+
+def test_randomized_svd_right_is_orthonormal_on_a_rank_deficient_matrix():
+    """A rank-1 matrix leaves every requested direction beyond the first
+    arbitrary, which is where the interpolative decomposition's own output
+    stops being dependable (it varies by LAPACK build, and a non-orthonormal
+    C propagates into a projection whose SVD then fails to converge). The
+    returned basis must be orthonormal regardless."""
+    Q = randomized_svd_right(
+        DenseMatrix(np.ones((10, 5))), n_components=2, n_oversamples=10
+    )
+
+    assert Q.shape == (5, 2)
+    assert np.all(np.isfinite(Q))
+    np.testing.assert_allclose(Q.T @ Q, np.eye(2), atol=1e-10)
+
+
+def test_randomized_svd_right_rejects_a_zero_iteration_budget():
+    """The starting subspace is random, so zero iterations has no meaningful
+    answer -- say so rather than return noise."""
+    with pytest.raises(ValueError, match="must be at least 1"):
+        randomized_svd_right(
+            DenseMatrix(np.ones((10, 5))), n_components=2, n_power_iter=0
+        )
+
+
+def test_randomized_svd_right_handles_a_matrix_with_no_signal():
+    """An all-zero matrix has no dominant subspace to find; the ID's pivoting
+    divides by zero there, so the fallback must still return the requested
+    number of orthonormal columns rather than NaNs or a failure."""
+    Q = randomized_svd_right(DenseMatrix(np.zeros((5, 4))), n_components=2)
+
+    assert Q.shape == (4, 2)
+    np.testing.assert_allclose(Q.T @ Q, np.eye(2), atol=1e-12)
 
 
 # ---------------------------------------------------------------------------

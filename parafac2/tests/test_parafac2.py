@@ -388,15 +388,18 @@ def test_row_order_does_not_change_fit():
     (w_a, f_a, _), r2_a = parafac2_nd(X_ann, rank=rank, random_state=3, n_iter_max=25)
     (w_b, f_b, _), r2_b = parafac2_nd(X_shuf, rank=rank, random_state=3, n_iter_max=25)
 
-    # r2 is a further floating-point reduction over the factors below, so it
-    # can't be held to a tighter tolerance than they are -- particularly on
-    # the mlx backend, whose GPU kernels compute the raw-data products in
-    # float32, and where permuting rows changes those products' summation
-    # order (floating-point addition is not associative).
+    # The invariance is exact in exact arithmetic only. On the mlx backend
+    # the GPU kernels compute the raw-data products in float32, and permuting
+    # rows changes those products' summation order (floating-point addition
+    # is not associative). The factors get the looser tolerance because they
+    # are where that noise enters: the SVD initialization refines its
+    # subspace iteratively, so a difference in the last float32 digit can
+    # cost an iteration and shift the starting point by ~1e-6. r2 and the
+    # weights are reductions over the factors and stay tighter.
     np.testing.assert_allclose(r2_a, r2_b, rtol=1e-6, atol=1e-6)
     np.testing.assert_allclose(w_a, w_b, rtol=1e-6, atol=1e-6)
     for fa, fb in zip(f_a, f_b, strict=True):
-        np.testing.assert_allclose(fa, fb, rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(fa, fb, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("n_inner", [1, 3])

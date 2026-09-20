@@ -84,7 +84,7 @@ class CompressedData:
 def compress_genes(
     X: Any,
     L_g: int,
-    n_power_iter: int = 2,
+    n_power_iter: int = 20,
     random_state: int | np.random.Generator | None = None,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Compute gene-mode compression projector Q and compressed matrix Xc.
@@ -96,8 +96,9 @@ def compress_genes(
         accounting for any mean-centering (see :mod:`parafac2.matrix`).
     L_g : int
         Target gene subspace dimension.
-    n_power_iter : int, default 2
-        Number of power iterations for randomized SVD.
+    n_power_iter : int, default 20
+        Maximum number of refinement iterations for the randomized SVD
+        (see :func:`~parafac2.utils.randomized_svd_right`).
     random_state : int | np.random.Generator | None, default None
         Random seed or generator.
 
@@ -184,7 +185,7 @@ def compress_dataset(
     X_in: anndata.AnnData,
     L: int | tuple[int, int | None] | str | bool = "auto",
     rank: int | None = None,
-    n_power_iter: int = 2,
+    n_power_iter: int = 20,
     random_state: int | np.random.Generator | None = None,
     normalize_slices: bool = False,
     backend: str | None = None,
@@ -198,16 +199,18 @@ def compress_dataset(
         ``X_in.obs["condition_unique_idxs"]``, and optional means in
         ``X_in.var["means"]``.
     L : int | tuple[int, int | None] | str | bool, default "auto"
-        Compression dimension(s). If ``"auto"`` or ``True``, picks dimensions based on
-        ``rank`` (or default rank 30 if ``rank`` is None). If an int, sets
+        Compression dimension(s). If ``"auto"`` or ``True``, uses
+        ``max(2 * rank, rank + 20)`` for both modes (with ``rank`` defaulting
+        to 30 when it is ``None``). If an int, sets
         both ``L_g = L`` and ``L_c = L``. If a tuple ``(L_g, L_c)``, sets
         gene and cell dimensions individually (pass ``L_c=None`` for
         gene-only compression).
     rank : int | None, default None
         Expected maximum rank to fit on the compressed data. Used when
         ``L="auto"``.
-    n_power_iter : int, default 2
-        Number of power iterations for randomized SVD.
+    n_power_iter : int, default 20
+        Maximum number of refinement iterations for the randomized SVD
+        (see :func:`~parafac2.utils.randomized_svd_right`).
     random_state : int | np.random.Generator | None, default None
         Random seed or generator.
     normalize_slices : bool, default False
@@ -235,8 +238,15 @@ def compress_dataset(
     # `L is True` has to be checked before the int branch: `bool` is a
     # subclass of `int`, so `compress=True` would otherwise be read as L=1.
     if L is True or (isinstance(L, str) and L == "auto"):
-        L_g_val = min(n_genes, max(4 * target_rank, target_rank + 20))
-        L_c_val: int | None = max(4 * target_rank, target_rank + 20)
+        # 2x the rank, with a +20 floor for small ranks. The 4x this used to
+        # take was headroom for a less accurate gene basis; measured against
+        # uncompressed converged fits at rank 30 on two single-cell datasets,
+        # the retained R2X from 2x to 4x differs by 0.01-0.06 percentage
+        # points (thomson 99.86% -> 99.87%, BAL 99.81% -> 99.87%), while the
+        # compression itself takes about twice as long at 4x.
+        auto_L = max(2 * target_rank, target_rank + 20)
+        L_g_val = min(n_genes, auto_L)
+        L_c_val: int | None = auto_L
     elif isinstance(L, tuple):
         L_g_val, L_c_val = L
         L_g_val = min(n_genes, L_g_val)

@@ -15,7 +15,14 @@ import numpy as np
 import pytest
 from scipy.sparse import csr_array
 
-from ..matrix import CSRMatrix, DenseMatrix, Matrix, as_matrix, to_gpu
+from ..matrix import (
+    CSRMatrix,
+    DenseMatrix,
+    Matrix,
+    as_linear_operator,
+    as_matrix,
+    to_gpu,
+)
 from ..utils import calc_W, randomized_svd_right
 
 
@@ -123,6 +130,46 @@ def test_randomized_svd_right_works_on_a_duck_typed_matrix(dense):
     Q = randomized_svd_right(fake, n_components=3, random_state=0)
     assert Q.shape == (dense.shape[1], 3)
     np.testing.assert_allclose(Q.T @ Q, np.eye(3), atol=1e-8)
+
+
+# ---------------------------------------------------------------------------
+# as_linear_operator: the adapter SciPy's decompositions see
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("wrap", [lambda d: d, csr_array, _FakeCenteredMatrix])
+def test_as_linear_operator_matches_the_dense_products(dense, wrap):
+    """Every product SciPy can ask for must agree with the dense matrix."""
+    op = as_linear_operator(wrap(dense))
+    rng = np.random.default_rng(1)
+    n_rows, n_cols = dense.shape
+    v, u = rng.normal(size=n_cols), rng.normal(size=n_rows)
+    V, U = rng.normal(size=(n_cols, 3)), rng.normal(size=(n_rows, 3))
+
+    assert op.shape == dense.shape
+    assert op.dtype == np.float64
+    np.testing.assert_allclose(op.matvec(v), dense @ v)
+    np.testing.assert_allclose(op.rmatvec(u), u @ dense)
+    np.testing.assert_allclose(op.matmat(V), dense @ V)
+    np.testing.assert_allclose(op.rmatmat(U), dense.T @ U)
+
+
+def test_as_linear_operator_applies_the_matrix_centering(dense):
+    """`means` reaches the operator through the wrapped matrix, not around it."""
+    means = np.arange(dense.shape[1], dtype=np.float64)
+    op = as_linear_operator(csr_array(dense), means)
+    v = np.ones(dense.shape[1])
+    np.testing.assert_allclose(op.matvec(v), (dense - means) @ v)
+
+
+def test_as_linear_operator_is_float64_for_float32_data():
+    """A float32 matrix still yields a float64 operator: SciPy's
+    decompositions need double precision, while the product itself stays in
+    the data's own dtype so the data is never upcast."""
+    mat = np.arange(12, dtype=np.float32).reshape(4, 3)
+    op = as_linear_operator(mat)
+    assert op.dtype == np.float64
+    assert op.matvec(np.ones(3)).dtype == np.float64
 
 
 # ---------------------------------------------------------------------------

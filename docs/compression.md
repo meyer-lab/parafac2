@@ -18,7 +18,7 @@ where $P_k \in \mathbb{R}^{N_k \times R}$ has orthonormal columns ($P_k^T P_k = 
 
 CANDELINC compression operates in two steps:
 
-1. **Gene Compression ($L_g$)**: Computes an orthonormal gene basis $Q \in \mathbb{R}^{J \times L_g}$ via randomized SVD on the mean-centered data, yielding gene-compressed matrix $X_c = (X - \mathbf{1}\boldsymbol{\mu}^T) Q$.
+1. **Gene Compression ($L_g$)**: Computes an orthonormal gene basis $Q \in \mathbb{R}^{J \times L_g}$ via randomized SVD on the mean-centered data (SciPy's LOBPCG against the Gram operator $X^T X$, whose top eigenvectors are the right-singular vectors sought), yielding gene-compressed matrix $X_c = (X - \mathbf{1}\boldsymbol{\mu}^T) Q$.
 2. **Cell Compression ($L_c$)**: Computes per-condition cell bases $Q_k \in \mathbb{R}^{N_k \times L_{c,k}}$ via thin SVD on each condition slice $X_{c,k}$, yielding small dense core matrices $Y_k \in \mathbb{R}^{L_{c,k} \times L_g}$.
 
 During ALS fitting, factor updates and Matricized Tensor Times Khatri-Rao Products (MTTKRP) operate exclusively on $Y_k$. After convergence:
@@ -96,10 +96,12 @@ When `compress="auto"` (or `compress=True`), `parafac2_nd` automatically sets th
 
 $$
 \begin{aligned}
-L_g &= \min(n_{\text{genes}}, \max(4 \cdot \text{rank}, \text{rank} + 20)) \\
-L_c &= \max(4 \cdot \text{rank}, \text{rank} + 20)
+L_g &= \min(n_{\text{genes}}, \max(2 \cdot \text{rank}, \text{rank} + 20)) \\
+L_c &= \max(2 \cdot \text{rank}, \text{rank} + 20)
 \end{aligned}
 $$
+
+The $2\times$ multiplier is a cost/accuracy trade-off measured against uncompressed converged fits: at rank 30 on two single-cell datasets, going from $2\times$ to $4\times$ recovers a further 0.01–0.06 percentage points of R2X (99.86% → 99.87% and 99.81% → 99.87% of the uncompressed fit) for roughly twice the compression time. Pass an explicit `L` when a particular dataset warrants more.
 
 ```python
 # One-step factorization with automatic compression
@@ -292,6 +294,8 @@ The contract is:
 | `slice_norms(condition_idxs, n_cond)` | Per-condition Frobenius norms. |
 | `to_device(backend)` | The same contract with the data on `'cupy'`/`'mlx'`. Only needed for a GPU backend. |
 | `__array_ufunc__ = None` | Required so `lhs @ X` defers to `X.__rmatmul__` rather than NumPy trying to broadcast `X`. |
+
+The randomized SVD needs nothing further: `parafac2.matrix.as_linear_operator` wraps the same contract as a SciPy `LinearOperator`, so the eigensolver sees only `matvec`/`matmat` and never learns what the data is or which device it is on.
 
 Mean-centering belongs to the matrix: `X @ C` must already mean `(X - 1 μᵀ) @ C`. The built-in wrappers take a `means` argument and apply it as a rank-1 correction to the (small) product, so a sparse matrix is never densified; a type that centers itself internally simply accounts for it in its own products and norms, and must not also be handed `adata.var["means"]`.
 
