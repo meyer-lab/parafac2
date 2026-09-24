@@ -17,11 +17,11 @@ classifiers = [
 ]
 
 dependencies = [
-    "numpy>=2.2",
+    "numpy>=2.5",
     "scipy>=1.18",
-    "tensorly>=0.8.1",
-    "tqdm>=4.68",
-    "anndata>=0.12",
+    "tensorly>=0.9",
+    "tqdm>=4.70",
+    "anndata>=0.13",
 ]
 
 [project.urls]
@@ -33,12 +33,12 @@ Issues = "https://github.com/meyer-lab/parafac2/issues"
 [project.optional-dependencies]
 gpu = [
     "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "cupy-cuda12x[ctk]; sys_platform != 'darwin'",
+    "cupy-cuda12x[ctk]>=14; sys_platform != 'darwin'",
     # cuSPARSE's legacy CSR-by-dense routine (what CuPy's own `@` uses) is
     # int32-index-only and silently corrupts results above ~2^31 nonzeros;
     # nvmath-python's generic-API SpMM binding supports int64 indices, so
     # sparse matmul/rmatmul are routed through it instead (see backend.py).
-    "nvmath-python; sys_platform != 'darwin'",
+    "nvmath-python>=1.0; sys_platform != 'darwin'",
 ]
 # SciPy's sparse @ dense kernels are single-threaded, and those products
 # dominate the fit. Installing this swaps in multithreaded MKL equivalents.
@@ -47,15 +47,15 @@ mkl = ["sparse-dot-mkl>=0.9; platform_machine == 'x86_64'"]
 [dependency-groups]
 dev = [
     "ruff>=0.16",
-    "pytest>=9.0",
-    "pytest-cov>=7.0",
-    "ty>=0.0.50",
-    "hypothesis>=6.100",
+    "pytest>=9.1",
+    "pytest-cov>=7.1",
+    "ty>=0.0.83",
+    "hypothesis>=6.168",
 ]
 docs = [
     "mkdocs>=1.6",
-    "mkdocs-material>=9.5",
-    "mkdocstrings[python]>=0.28",
+    "mkdocs-material>=9.7",
+    "mkdocstrings[python]>=1.0",
 ]
 
 [tool.ty.rules]
