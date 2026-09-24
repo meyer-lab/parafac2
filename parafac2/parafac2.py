@@ -102,6 +102,7 @@ def parafac2_init(
     n_oversamples: int = 10,
     n_iter: int = 20,
     norm_tensor: float | None = None,
+    row_weights: np.ndarray | None = None,
 ) -> tuple[list[np.ndarray], float]:
     """Compute initial factors using randomized SVD.
 
@@ -133,6 +134,8 @@ def parafac2_init(
     norm_tensor : float | None, default None
         Precomputed squared Frobenius norm of the mean-centered ``X``. If
         ``None``, it is computed via ``X.norm_sq()``.
+    row_weights : np.ndarray | None, default None
+        Per-row weights; if given, ``C`` comes from the row-weighted data.
 
     Returns
     -------
@@ -152,6 +155,7 @@ def parafac2_init(
         n_oversamples=n_oversamples,
         n_power_iter=n_iter,
         random_state=random_state,
+        row_weights=row_weights,
     )
 
     factors = [
@@ -182,12 +186,24 @@ def _fit_parafac2_compressed(
             f"Rank ({rank}) cannot exceed max cell compression dimension ({compressed.max_cell_dim})."
         )
 
-    factors = init_compressed_factors(compressed.cores, rank, random_state=random_state)
+    factors = init_compressed_factors(
+        compressed.cores,
+        rank,
+        random_state=random_state,
+        slice_weights=compressed.slice_weights,
+    )
+
+    # With slice weights, the error tracked is that of the weighted cores.
+    norm_fit = (
+        compressed.norm_tensor
+        if compressed.norm_weighted is None
+        else compressed.norm_weighted
+    )
 
     mttkrp, err = project_data_compressed(
         compressed.cores,
         factors,
-        compressed.norm_tensor,
+        norm_fit,
         mode=0,
         slice_weights=compressed.slice_weights,
     )
@@ -208,12 +224,12 @@ def _fit_parafac2_compressed(
             mttkrp, err = project_data_compressed(
                 compressed.cores,
                 factors,
-                compressed.norm_tensor,
+                norm_fit,
                 mode=modes[(i + 1) % len(modes)],
                 slice_weights=compressed.slice_weights,
             )
 
-        errs.append(err / compressed.norm_tensor)
+        errs.append(err / norm_fit)
 
         delta = errs[-2] - errs[-1]
         tq.set_postfix(error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, refresh=False)
@@ -224,6 +240,14 @@ def _fit_parafac2_compressed(
             break
 
     R2X = 1.0 - errs[-1]
+    if compressed.slice_weights is not None:
+        # Map A back to data units and score it against the unweighted data.
+        factors[0] = factors[0] / compressed.slice_weights[:, np.newaxis]
+        _, err = project_data_compressed(
+            compressed.cores, factors, compressed.norm_tensor, mode=0
+        )
+        R2X = 1.0 - err / compressed.norm_tensor
+
     projections_tilde = project_data_compressed(
         compressed.cores,
         factors,
@@ -269,14 +293,13 @@ def parafac2_nd(
     compressed subspace (Bro's "compress-then-fit"), eliminating per-sweep raw
     data passes.
 
-    If ``normalize_slices`` is True, each condition's contribution to the
-    factor updates is rescaled by the inverse of its (mean-centered)
-    Frobenius norm. This prevents conditions with many more cells (or much
-    higher variance) from dominating the shared factors, e.g. the ``A``
-    matrix. The weighting is computed from small per-condition summary
-    statistics and applied to per-condition intermediates only, so ``X`` is
-    never copied or modified. The reported error/R2X are unaffected, since
-    they are still computed from the unweighted fit.
+    If ``normalize_slices`` is True, each condition is weighted by the
+    inverse of its (mean-centered) Frobenius norm, so every condition counts
+    equally in the fit regardless of its cell count or variance. The fit is
+    that of the rescaled slices ``X_k / ||X_k||`` (``X`` itself is never
+    copied or modified), so ``tol`` and ``callback`` follow their error. The
+    returned ``A`` is in data units and ``R2X`` is the unweighted fraction of
+    variance explained, comparable to an unweighted fit.
 
     Parameters
     ----------
@@ -305,8 +328,8 @@ def parafac2_nd(
         accelerator is auto-detected (see
         :func:`~parafac2.backend.get_backend`).
     normalize_slices : bool, default False
-        Whether to rescale each condition's contribution to the factor
-        updates by the inverse of its Frobenius norm, as described above.
+        Whether to weight each condition by the inverse of its Frobenius
+        norm, as described above.
     n_inner : int, default 1
         Number of ``(projection, A, B)`` sub-iterations per sweep. These read
         the data only through the cached ``W``, costing ``O(n_cells *
@@ -385,6 +408,7 @@ def parafac2_nd(
         _means,
         norm_tensor,
         slice_weights,
+        norm_weighted,
     ) = extract_dataset_info(X_in, normalize_slices=normalize_slices)
 
     n_cond = int(np.amax(condition_unique_idxs)) + 1
@@ -404,16 +428,24 @@ def parafac2_nd(
         rank=rank,
         random_state=random_state,
         norm_tensor=norm_tensor,
+        row_weights=None
+        if slice_weights is None
+        else slice_weights[condition_unique_idxs],
     )
 
     cond_slices = condition_slices(condition_unique_idxs, n_cond)
+
+    # The error tracked is that of the weighted slices w_k X_k, whose
+    # compressed slices are w_k S_k.
+    w = np.ones(n_cond) if slice_weights is None else slice_weights
+    norm_fit = norm_tensor if norm_weighted is None else norm_weighted
 
     # W depends only on C, so it stays valid across the A and B updates and is
     # recomputed only once C changes. Each sweep therefore costs exactly two
     # raw-data products: this one and the X^T @ H inside the mode-2 update.
     W = calc_W(X_raw, factors[2])
     projections, S = project_data(W, factors, cond_slices)
-    errs = [calc_err(S, factors, norm_tensor) / norm_tensor]
+    errs = [calc_err(S * w[:, None, None], factors, norm_fit) / norm_fit]
 
     tq = tqdm(range(n_iter_max), disable=(not verbose), delay=0.5)
     for iteration in tq:
@@ -441,7 +473,7 @@ def parafac2_nd(
         # for the factors as they stand at the end of this sweep.
         W = calc_W(X_raw, factors[2])
         projections, S = project_data(W, factors, cond_slices)
-        errs.append(calc_err(S, factors, norm_tensor) / norm_tensor)
+        errs.append(calc_err(S * w[:, None, None], factors, norm_fit) / norm_fit)
 
         delta = errs[-2] - errs[-1]
         tq.set_postfix(error=errs[-1], R2X=1.0 - errs[-1], Δ=delta, refresh=False)
@@ -452,6 +484,10 @@ def parafac2_nd(
             break
 
     R2X = 1 - errs[-1]
+    if slice_weights is not None:
+        # Map A back to data units and score it against the unweighted data.
+        factors[0] = factors[0] / w[:, np.newaxis]
+        R2X = 1 - calc_err(S, factors, norm_tensor) / norm_tensor
 
     # Standardize the results and return
     return standardize_pf2(factors, projections), R2X

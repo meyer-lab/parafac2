@@ -64,6 +64,9 @@ class CompressedData:
     slice_weights: np.ndarray | None = None
     """Optional per-condition slice weights for normalized ALS."""
 
+    norm_weighted: float | None = None
+    """Squared norm of the weighted slices ``w_k X_k``, set with ``slice_weights``."""
+
     means: np.ndarray | None = None
     """Per-gene means subtracted during compression."""
 
@@ -86,6 +89,7 @@ def compress_genes(
     L_g: int,
     n_power_iter: int = 20,
     random_state: int | np.random.Generator | None = None,
+    row_weights: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Compute gene-mode compression projector Q and compressed matrix Xc.
 
@@ -101,6 +105,8 @@ def compress_genes(
         (see :func:`~parafac2.utils.randomized_svd_right`).
     random_state : int | np.random.Generator | None, default None
         Random seed or generator.
+    row_weights : np.ndarray | None, default None
+        Per-row weights; if given, ``Q`` spans the row-weighted data.
 
     Returns
     -------
@@ -121,6 +127,7 @@ def compress_genes(
         n_oversamples=0,
         n_power_iter=n_power_iter,
         random_state=random_state,
+        row_weights=row_weights,
     )
     X_c = calc_W(X, Q)
     norm_Xc_sq = float(np.sum(X_c**2))
@@ -229,6 +236,7 @@ def compress_dataset(
         means,
         norm_tensor,
         slice_weights,
+        norm_weighted,
     ) = extract_dataset_info(X_in, normalize_slices=normalize_slices)
     total_cells, n_genes = X_mat.shape
     n_cond = int(np.amax(condition_unique_idxs)) + 1
@@ -262,6 +270,9 @@ def compress_dataset(
         L_g=L_g_val,
         n_power_iter=n_power_iter,
         random_state=random_state,
+        row_weights=None
+        if slice_weights is None
+        else slice_weights[condition_unique_idxs],
     )
 
     cores, Q_k, norm_cores_sq = compress_cells(
@@ -283,6 +294,7 @@ def compress_dataset(
         n_genes=n_genes,
         n_cond=n_cond,
         slice_weights=slice_weights,
+        norm_weighted=norm_weighted,
         means=means,
         adata=X_in,
     )
@@ -327,13 +339,15 @@ def project_data_compressed(
     factors : list[np.ndarray]
         Current factor matrices ``[A, B, C_L]`` in the compressed space.
     norm_tensor : float
-        Squared Frobenius norm of the original mean-centered tensor.
+        Squared Frobenius norm of the original mean-centered tensor, or of
+        its weighted slices when ``slice_weights`` is given.
     mode : int
         Mode to update (0, 1, or 2).
     return_projections : bool, default False
         Whether to return the list of projection matrices ``P_tilde_k``.
     slice_weights : np.ndarray | None, default None
-        Optional per-condition slice weights.
+        Optional per-condition weights ``w_k``; the MTTKRP and error are then
+        those of the weighted cores ``w_k Y_k``.
 
     Returns
     -------
@@ -364,16 +378,15 @@ def project_data_compressed(
         if return_projections:
             continue
 
-        psc = proj.T @ W_i  # (rank, rank)
+        w_i = 1.0 if slice_weights is None else slice_weights[i]
+        psc = w_i * (proj.T @ W_i)  # (rank, rank), of the weighted core
         m_i = np.sum(psc * B, axis=0)
         norm_sq_err -= 2.0 * float(np.dot(A[i], m_i))
 
-        w_i = 1.0 if slice_weights is None else slice_weights[i]
-
         if mode == 0:
-            mttkrp[i] = m_i * w_i
+            mttkrp[i] = m_i
         elif mode == 1:
-            mttkrp += psc * A[i] * w_i
+            mttkrp += psc * A[i]
         else:
             H_tilde_i = proj @ (B * A[i]) * w_i
             mttkrp += Y_i.T @ H_tilde_i
@@ -388,13 +401,16 @@ def init_compressed_factors(
     cores: list[np.ndarray],
     rank: int,
     random_state: int | np.random.Generator | None = None,
+    slice_weights: np.ndarray | None = None,
 ) -> list[np.ndarray]:
     """Initialize factor matrices [A, B, C_L] directly on compressed cores."""
     n_cond = len(cores)
     L_g = cores[0].shape[1]
     assert rank <= L_g, f"Rank {rank} exceeds compressed gene dimension {L_g}"
 
-    # SVD of stacked cores to initialize C_L
+    # SVD of stacked (weighted) cores to initialize C_L
+    if slice_weights is not None:
+        cores = [w_k * Y_k for w_k, Y_k in zip(slice_weights, cores, strict=True)]
     Y_stacked = np.concatenate(cores, axis=0)
     _, _, vh = np.linalg.svd(Y_stacked, full_matrices=False)
     C_L = vh[:rank, :].T.astype(np.float64)

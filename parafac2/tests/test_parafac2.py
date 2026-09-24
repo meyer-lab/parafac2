@@ -486,6 +486,70 @@ def test_parafac2_normalize_slices_changes_result():
         np.testing.assert_allclose(f_off[0], f_on[0], rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize("compress", [None, 15])
+def test_parafac2_normalize_slices_matches_fit_to_prescaled_slices(compress):
+    """normalize_slices=True is the unweighted fit to X_k / ||X_k||, sweep for
+    sweep, with each condition's model scaled back by ||X_k||."""
+    rng = np.random.default_rng(3)
+    X_list = [
+        scale * rng.normal(size=(n, 20))
+        for n, scale in ((80, 6.0), (25, 1.0), (15, 0.5))
+    ]
+    norms = [np.linalg.norm(X_k) for X_k in X_list]
+    X_scaled = [X_k / s for X_k, s in zip(X_list, norms, strict=True)]
+
+    fits, sweeps = [], []
+    for data, normalize_slices in ((X_list, True), (X_scaled, False)):
+        errs = []
+        fits.append(
+            parafac2_nd(
+                pf2_to_anndata(data, sparse=False),
+                rank=3,
+                random_state=3,
+                n_iter_max=200,
+                tol=1e-9,
+                compress=compress,
+                normalize_slices=normalize_slices,
+                callback=lambda _i, err, _f, errs=errs: errs.append(err),
+            )[0]
+        )
+        sweeps.append(errs)
+
+    np.testing.assert_allclose(sweeps[0], sweeps[1], rtol=1e-6)
+    for k, s in enumerate(norms):
+        models = [P[k] @ (B * (A[k] * weights)) @ C.T for weights, (A, B, C), P in fits]
+        np.testing.assert_allclose(models[0], s * models[1], atol=1e-6 * s)
+
+
+@pytest.mark.parametrize("normalize_slices", [False, True])
+@pytest.mark.parametrize("compress", [None, 15])
+def test_parafac2_r2x_matches_returned_factors(normalize_slices, compress):
+    """The returned R2X is the fraction of the data's variance that the
+    returned factors explain, with or without slice weights."""
+    rng = np.random.default_rng(5)
+    X_list = [
+        scale * rng.normal(size=(n, 20))
+        for n, scale in ((80, 6.0), (15, 1.0), (15, 0.5))
+    ]
+    X_ann = pf2_to_anndata(X_list, sparse=False)
+
+    (weights, (A, B, C), P), r2x = parafac2_nd(
+        X_ann,
+        rank=3,
+        random_state=5,
+        n_iter_max=50,
+        compress=compress,
+        normalize_slices=normalize_slices,
+    )
+
+    resid = sum(
+        np.linalg.norm(X_k - P_k @ (B * (A[k] * weights)) @ C.T) ** 2
+        for k, (X_k, P_k) in enumerate(zip(X_list, P, strict=True))
+    )
+    total = sum(np.linalg.norm(X_k) ** 2 for X_k in X_list)
+    np.testing.assert_allclose(r2x, 1.0 - resid / total, rtol=1e-6)
+
+
 def test_parafac2_raises_when_a_condition_has_fewer_cells_than_rank():
     """A condition's projection matrix needs >= rank cells to be orthonormal;
     fitting with rank exceeding the smallest condition's cell count must

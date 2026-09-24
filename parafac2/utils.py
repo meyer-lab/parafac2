@@ -35,7 +35,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
-from scipy.sparse.linalg import LinearOperator, lobpcg
+from scipy.sparse import diags_array
+from scipy.sparse.linalg import LinearOperator, aslinearoperator, lobpcg
 from tensorly.cp_tensor import cp_flip_sign, cp_normalize
 
 from .matrix import as_linear_operator, as_matrix
@@ -251,11 +252,8 @@ def parafac_update(
     ``O(n_cond * rank^2)``. Mode 2 is the only update that has to revisit the
     raw data, via ``X^T @ H`` with ``H_k = P_k B diag(a_k)``.
 
-    ``slice_weights``, if given, is a per-condition scalar (e.g. an inverse
-    Frobenius norm) applied only to the MTTKRP contributions. This rebalances
-    how much each slice contributes to the factor updates without touching or
-    copying ``X``, and without affecting the reported error (which
-    :func:`calc_err` computes from the unweighted ``S``).
+    ``slice_weights``, if given, scales each condition's MTTKRP contribution,
+    so the update fits the weighted slices ``w_k X_k`` without copying ``X``.
 
     Parameters
     ----------
@@ -396,6 +394,7 @@ def randomized_svd_right(
     n_oversamples: int = 0,
     n_power_iter: int = 20,
     random_state: int | np.random.Generator | None = None,
+    row_weights: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute the top right-singular vectors of the mean-centered matrix ``(X - 1 mu^T)``.
 
@@ -435,6 +434,9 @@ def randomized_svd_right(
         there is no meaningful zero-iteration answer.
     random_state : int | np.random.Generator | None, default None
         Random seed or NumPy generator for the starting subspace.
+    row_weights : np.ndarray | None, default None
+        Per-row weights ``d``; if given, the vectors are those of
+        ``diag(d) (X - 1 mu^T)``.
 
     Returns
     -------
@@ -463,6 +465,8 @@ def randomized_svd_right(
         )
 
     op = as_linear_operator(X)
+    if row_weights is not None:
+        op = aslinearoperator(diags_array(row_weights)) @ op
     block_size = min(max_components, n_components + n_oversamples)
     if n_genes < 5 * block_size:
         return _exact_right_vectors(op, n_components)
@@ -487,7 +491,7 @@ def randomized_svd_right(
 def extract_dataset_info(
     X_in: anndata.AnnData,
     normalize_slices: bool = False,
-) -> tuple[Any, np.ndarray, np.ndarray, float, np.ndarray | None]:
+) -> tuple[Any, np.ndarray, np.ndarray, float, np.ndarray | None, float | None]:
     """Wrap an AnnData's matrix and summarize what the fit needs up front.
 
     This is the boundary where a dataset stops being a specific storage type
@@ -504,10 +508,11 @@ def extract_dataset_info(
 
     Returns
     -------
-    tuple[Any, np.ndarray, np.ndarray, float, np.ndarray | None]
-        The ``(X, condition_unique_idxs, means, norm_tensor, slice_weights)``
-        tuple. ``means`` is returned for bookkeeping only -- it is already
-        folded into ``X``.
+    tuple[Any, np.ndarray, np.ndarray, float, np.ndarray | None, float | None]
+        The ``(X, condition_unique_idxs, means, norm_tensor, slice_weights,
+        norm_weighted)`` tuple, where ``norm_weighted`` is the squared norm of
+        the weighted slices ``w_k X_k`` (``None`` without weights). ``means``
+        is returned for bookkeeping only -- it is already folded into ``X``.
     """
     assert X_in.X is not None
     condition_unique_idxs = cast(
@@ -524,10 +529,12 @@ def extract_dataset_info(
     norm_tensor = float(X.norm_sq())
 
     slice_weights: np.ndarray | None = None
+    norm_weighted: float | None = None
     if normalize_slices:
         slice_norms = np.asarray(
             X.slice_norms(condition_unique_idxs, n_cond), dtype=np.float64
         )
         slice_weights = np.where(slice_norms > 1e-10, 1.0 / slice_norms, 1.0)
+        norm_weighted = float(np.sum((slice_weights * slice_norms) ** 2))
 
-    return X, condition_unique_idxs, means, norm_tensor, slice_weights
+    return X, condition_unique_idxs, means, norm_tensor, slice_weights, norm_weighted
