@@ -284,6 +284,7 @@ def parafac2_nd(
     normalize_slices: bool = False,
     n_inner: int = 1,
     compress: int | tuple[int, int | None] | str | bool | None = None,
+    n_power_iter: int = 20,
     fix_B_identity: bool = False,
 ) -> tuple[tuple[np.ndarray, list[np.ndarray], list[np.ndarray]], float]:
     r"""The same interface as regular PARAFAC2 with optional CANDELINC compression.
@@ -349,6 +350,11 @@ def parafac2_nd(
         dimensions separately (pass ``L_c=None`` for gene-only compression).
         Ignored if ``X_in`` is already a
         :class:`~parafac2.compress.CompressedData`.
+    n_power_iter : int, default 20
+        Maximum number of refinement iterations for the randomized SVD in the
+        compression step (see :func:`~parafac2.compress.compress_dataset`).
+        Ignored if ``compress`` is disabled or if ``X_in`` is already a
+        :class:`~parafac2.compress.CompressedData`.
     fix_B_identity : bool, default False
         Whether to hold the ``B`` factor matrix fixed at the identity rather
         than fitting it. ``B`` is initialized to the identity either way, so
@@ -387,6 +393,7 @@ def parafac2_nd(
             X_in,
             L=compress,
             rank=rank,
+            n_power_iter=n_power_iter,
             random_state=random_state,
             normalize_slices=normalize_slices,
             backend=backend,
