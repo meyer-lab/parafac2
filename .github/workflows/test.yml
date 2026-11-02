@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+env:
+  # Pin Python: uv otherwise picks the newest release (3.15), which h5py has no wheels for.
+  UV_PYTHON: "3.14"
+
 jobs:
   build:
     strategy:
